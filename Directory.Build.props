@@ -1,0 +1,16 @@
+<Project>
+
+  <!--
+    Shared settings for every project in the repository.
+    Keep this file small: project-specific configuration belongs in the individual .csproj files,
+    and the WinUI app keeps the values produced by the official winapp template.
+  -->
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Deterministic>true</Deterministic>
+    <Product>DlnRenderer</Product>
+    <Company>DlnRenderer contributors</Company>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+
+</Project>

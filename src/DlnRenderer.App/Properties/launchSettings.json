@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "DlnRenderer (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "DlnRenderer (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

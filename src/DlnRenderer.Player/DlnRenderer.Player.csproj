@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>DlnRenderer.Player</RootNamespace>
+    <!-- The Win32 video host uses plain P/Invoke, so no WinUI dependency is required here. -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DlnRenderer.Core\DlnRenderer.Core.csproj" />
+  </ItemGroup>
+
+  <!--
+    libmpv is a native DLL and is NOT vendored in this repository: it is GPL-2.0-or-later and
+    must not be redistributed without a licensing decision. scripts/fetch-libmpv.ps1 copies a
+    verified local build into this folder for development. See docs/architecture.md.
+  -->
+  <ItemGroup>
+    <None Include="native\x64\libmpv-2.dll"
+          Condition="Exists('native\x64\libmpv-2.dll')"
+          CopyToOutputDirectory="PreserveNewest"
+          Link="libmpv-2.dll" />
+  </ItemGroup>
+
+  <Target Name="WarnWhenLibmpvMissing" BeforeTargets="Build" Condition="!Exists('native\x64\libmpv-2.dll')">
+    <Warning Text="libmpv-2.dll is missing from src/DlnRenderer.Player/native/x64. Build succeeds, but playback will fail at runtime. Run scripts/fetch-libmpv.ps1." />
+  </Target>
+
+</Project>
