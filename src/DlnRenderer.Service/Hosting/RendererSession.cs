@@ -211,6 +211,19 @@ public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsy
     public Task SetMuteAsync(bool muted, CancellationToken cancellationToken)
         => ExecuteAsync("mute", () => _player.SetMuteAsync(muted, cancellationToken), cancellationToken);
 
+    /// <summary>Player volume (0-100) read from the player, not the Windows mixer.</summary>
+    public async Task<int> GetVolumeAsync(CancellationToken cancellationToken)
+    {
+        var status = await _player.GetStatusAsync(cancellationToken).ConfigureAwait(false);
+        return status.Volume;
+    }
+
+    public async Task<bool> GetMuteAsync(CancellationToken cancellationToken)
+    {
+        var status = await _player.GetStatusAsync(cancellationToken).ConfigureAwait(false);
+        return status.Muted;
+    }
+
     public async Task<TransportSnapshot> GetStatusAsync(CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);

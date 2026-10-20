@@ -40,9 +40,11 @@ public class DescriptionTests
         var document = XDocument.Parse(DeviceDescriptionBuilder.Build(Options));
         var services = document.Descendants(Device + "service").ToList();
 
-        Assert.Equal(2, services.Count);
+        // Three services: AVTransport, RenderingControl (needed by casting clients) and ConnectionManager.
+        Assert.Equal(3, services.Count);
         var types = services.Select(s => s.Element(Device + "serviceType")!.Value).ToList();
         Assert.Contains(SoapNamespaces.AvTransportServiceType, types);
+        Assert.Contains(SoapNamespaces.RenderingControlServiceType, types);
         Assert.Contains(SoapNamespaces.ConnectionManagerServiceType, types);
 
         foreach (var service in services)
@@ -50,9 +52,13 @@ public class DescriptionTests
             var control = service.Element(Device + "controlURL")!.Value;
             var scpd = service.Element(Device + "SCPDURL")!.Value;
             var events = service.Element(Device + "eventSubURL")!.Value;
-            Assert.StartsWith("/", control, StringComparison.Ordinal);
-            Assert.StartsWith("/scpd/", scpd, StringComparison.Ordinal);
-            Assert.StartsWith("/event/", events, StringComparison.Ordinal);
+            // Relative URLs (no leading slash) resolve under the description URL's path, which is
+            // what casting clients expect and what keeps them working on multi-homed hosts.
+            Assert.False(control.StartsWith('/'), $"controlURL should be relative, was '{control}'");
+            Assert.False(scpd.StartsWith('/'), $"SCPDURL should be relative, was '{scpd}'");
+            Assert.False(events.StartsWith('/'), $"eventSubURL should be relative, was '{events}'");
+            Assert.StartsWith("scpd/", scpd, StringComparison.Ordinal);
+            Assert.StartsWith("event/", events, StringComparison.Ordinal);
         }
     }
 

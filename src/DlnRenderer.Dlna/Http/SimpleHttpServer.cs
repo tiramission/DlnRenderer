@@ -4,7 +4,12 @@ using System.Text;
 
 namespace DlnRenderer.Dlna.Http;
 
-public sealed record DlnHttpRequest(string Method, string Path, IReadOnlyDictionary<string, string> Headers, string Body);
+public sealed record DlnHttpRequest(
+    string Method,
+    string Path,
+    IReadOnlyDictionary<string, string> Headers,
+    string Body,
+    string? RemoteAddress = null);
 
 public sealed record DlnHttpResponse(int StatusCode, string ContentType, string Body, IReadOnlyDictionary<string, string>? Headers = null)
 {
@@ -106,6 +111,13 @@ public sealed class SimpleHttpServer : IAsyncDisposable
                 if (request is null)
                 {
                     return;
+                }
+
+                // Pair the request with its sender so diagnostics can tell "never fetched" apart
+                // from "fetched and rejected".
+                if (client.Client.RemoteEndPoint is IPEndPoint remote)
+                {
+                    request = request with { RemoteAddress = remote.Address.ToString() };
                 }
 
                 var response = await _handler(request, cancellationToken).ConfigureAwait(false);
@@ -239,7 +251,9 @@ public sealed class SimpleHttpServer : IAsyncDisposable
         builder.Append("Content-Type: ").Append(response.ContentType).Append("\r\n");
         builder.Append("Content-Length: ").Append(bodyBytes.Length).Append("\r\n");
         builder.Append("Connection: close\r\n");
-        builder.Append("Server: DlnRenderer/0.1 UPnP/1.1\r\n");
+        builder.Append("Server: Windows/10 UPnP/1.0 DlnRenderer/0.1\r\n");
+        // RFC 7231 requires an origin server to send Date; strict control points reject replies without it.
+        builder.Append("Date: ").Append(DateTime.UtcNow.ToString("r", System.Globalization.CultureInfo.InvariantCulture)).Append("\r\n");
 
         if (response.Headers is not null)
         {

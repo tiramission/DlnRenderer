@@ -32,4 +32,17 @@ public interface ITransportRenderer
     Task SeekAsync(TimeSpan position, CancellationToken cancellationToken);
 
     Task<TransportSnapshot> GetStatusAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Current player volume in the range 0-100, as reported by the player itself.
+    /// This is the player's own volume, never the Windows master volume.
+    /// </summary>
+    Task<int> GetVolumeAsync(CancellationToken cancellationToken);
+
+    /// <param name="volume">Target player volume in the range 0-100.</param>
+    Task SetVolumeAsync(int volume, CancellationToken cancellationToken);
+
+    Task<bool> GetMuteAsync(CancellationToken cancellationToken);
+
+    Task SetMuteAsync(bool muted, CancellationToken cancellationToken);
 }

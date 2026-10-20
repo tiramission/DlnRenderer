@@ -10,6 +10,12 @@ public static class SsdpConstants
     public const string SearchAll = "ssdp:all";
     public const string RootDevice = "upnp:rootdevice";
     public const string MediaRendererDeviceType = "urn:schemas-upnp-org:device:MediaRenderer:1";
+
+    // Service-level targets. Several control points discover renderers by service type rather than
+    // by device type, so these must be answered as well.
+    public const string AvTransportServiceType = "urn:schemas-upnp-org:service:AVTransport:1";
+    public const string RenderingControlServiceType = "urn:schemas-upnp-org:service:RenderingControl:1";
+    public const string ConnectionManagerServiceType = "urn:schemas-upnp-org:service:ConnectionManager:1";
 }
 
 public sealed record SsdpSearchRequest(string SearchTarget, int Mx);
@@ -57,17 +63,15 @@ public static class SsdpMessage
 
     /// <summary>True when this renderer must answer the given search target.</summary>
     public static bool Matches(string searchTarget, Guid uuid)
-    {
-        var st = searchTarget.Trim();
-        var udn = $"uuid:{uuid:D}";
+        => TargetsForSearch(searchTarget, uuid).Count > 0;
 
-        return st.Equals(SsdpConstants.SearchAll, StringComparison.OrdinalIgnoreCase)
-            || st.Equals(SsdpConstants.RootDevice, StringComparison.OrdinalIgnoreCase)
-            || st.Equals(SsdpConstants.MediaRendererDeviceType, StringComparison.OrdinalIgnoreCase)
-            || st.Equals(udn, StringComparison.OrdinalIgnoreCase);
-    }
-
-    /// <summary>Every (ST, USN) pair this device advertises.</summary>
+    /// <summary>Every (ST, USN) pair this device answers a search for.</summary>
+    /// <remarks>
+    /// Includes the service types, not only the device type. Client implementations differ: some
+    /// search for <c>MediaRenderer:1</c>, others (notably BubbleUPnP) search for
+    /// <c>service:AVTransport:1</c> and <c>service:RenderingControl:1</c> to find renderers. Answering
+    /// only device-level targets makes the renderer invisible to the latter group.
+    /// </remarks>
     public static IReadOnlyList<(string SearchTarget, string Usn)> AdvertisedTargets(Guid uuid)
     {
         var udn = $"uuid:{uuid:D}";
@@ -76,7 +80,41 @@ public static class SsdpMessage
             (SsdpConstants.RootDevice, $"{udn}::upnp:rootdevice"),
             (udn, udn),
             (SsdpConstants.MediaRendererDeviceType, $"{udn}::{SsdpConstants.MediaRendererDeviceType}"),
+            (SsdpConstants.AvTransportServiceType, $"{udn}::{SsdpConstants.AvTransportServiceType}"),
+            (SsdpConstants.RenderingControlServiceType, $"{udn}::{SsdpConstants.RenderingControlServiceType}"),
+            (SsdpConstants.ConnectionManagerServiceType, $"{udn}::{SsdpConstants.ConnectionManagerServiceType}"),
         ];
+    }
+
+    /// <summary>
+    /// The targets to answer a specific search with.
+    /// </summary>
+    /// <remarks>
+    /// A reply's ST must equal the ST that was searched for (SSDP requires this); only
+    /// <c>ssdp:all</c> expects one reply per advertised target. Answering a targeted search with
+    /// every target - which this server used to do - makes strict clients treat the replies as
+    /// malformed and drop the device, while looking perfectly correct in a hand-rolled client.
+    /// </remarks>
+    public static IReadOnlyList<(string SearchTarget, string Usn)> TargetsForSearch(string searchTarget, Guid uuid)
+    {
+        var st = searchTarget.Trim();
+        var advertised = AdvertisedTargets(uuid);
+
+        if (st.Equals(SsdpConstants.SearchAll, StringComparison.OrdinalIgnoreCase))
+        {
+            return advertised;
+        }
+
+        // Echo the exact target the control point asked for, using its own casing.
+        foreach (var (target, usn) in advertised)
+        {
+            if (string.Equals(target, st, StringComparison.OrdinalIgnoreCase))
+            {
+                return [(st, usn)];
+            }
+        }
+
+        return [];
     }
 
     public static string BuildSearchResponse(
@@ -173,13 +211,91 @@ public static class NetworkInterfaces
                 .Select(a => new
                 {
                     a.Address,
+                    // A default gateway is the strongest signal that this address belongs to the
+                    // network the user's other devices are on. Hyper-V/WSL switches are "Ethernet"
+                    // by type and have no gateway, so type alone cannot rank them out.
+                    HasGateway = HasDefaultGateway(n),
                     Score = ScoreAdapter(n),
                 }))
-            .OrderByDescending(x => x.Score)
+            .OrderByDescending(x => x.HasGateway)
+            .ThenByDescending(x => x.Score)
             .Select(x => x.Address)
             .Distinct()
             .ToList();
     }
+
+    /// <summary>
+    /// Picks the local address that shares a subnet with <paramref name="remote"/>, so an answer is
+    /// sent from - and advertises - the interface the requester can actually reach.
+    /// Returns null when no candidate shares the requester's subnet.
+    /// </summary>
+    public static System.Net.IPAddress? SelectSourceAddressFor(
+        System.Net.IPAddress remote,
+        IReadOnlyList<System.Net.IPAddress> candidates)
+    {
+        if (remote.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork)
+        {
+            return null;
+        }
+
+        var remoteBytes = remote.GetAddressBytes();
+
+        foreach (var nic in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+        {
+            foreach (var unicast in nic.GetIPProperties().UnicastAddresses)
+            {
+                if (unicast.Address.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork)
+                {
+                    continue;
+                }
+
+                if (unicast.PrefixLength is < 1 or > 32)
+                {
+                    continue;
+                }
+
+                if (!candidates.Any(c => c.Equals(unicast.Address)))
+                {
+                    continue;
+                }
+
+                if (InSameSubnet(remoteBytes, unicast.Address.GetAddressBytes(), unicast.PrefixLength))
+                {
+                    return unicast.Address;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static bool InSameSubnet(byte[] a, byte[] b, int prefixLength)
+    {
+        var fullBytes = prefixLength / 8;
+        var remainingBits = prefixLength % 8;
+
+        for (var i = 0; i < fullBytes; i++)
+        {
+            if (a[i] != b[i])
+            {
+                return false;
+            }
+        }
+
+        if (remainingBits == 0)
+        {
+            return true;
+        }
+
+        var mask = (byte)(0xFF << (8 - remainingBits));
+        return (a[fullBytes] & mask) == (b[fullBytes] & mask);
+    }
+
+    private static bool HasDefaultGateway(System.Net.NetworkInformation.NetworkInterface nic)
+        => nic.GetIPProperties().GatewayAddresses
+            .Any(g => g.Address is not null
+                      && !g.Address.Equals(System.Net.IPAddress.Any)
+                      && !g.Address.Equals(System.Net.IPAddress.IPv6Any));
 
     /// <summary>Higher is better: a real Ethernet/Wi-Fi link beats anything exotic.</summary>
     private static int ScoreAdapter(System.Net.NetworkInformation.NetworkInterface nic)

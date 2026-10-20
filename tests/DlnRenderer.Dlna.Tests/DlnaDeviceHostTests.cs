@@ -98,7 +98,7 @@ public class DlnaDeviceHostTests
             SoapContent(SoapNamespaces.ConnectionManagerServiceType, "GetProtocolInfo")))
             .Content.ReadAsStringAsync();
 
-        Assert.Contains("http-get:*:*:*", cmBody, StringComparison.Ordinal);
+        Assert.Contains("http-get:*:video/mp4", cmBody, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

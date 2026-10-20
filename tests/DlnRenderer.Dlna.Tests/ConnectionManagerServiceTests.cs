@@ -26,7 +26,12 @@ public class ConnectionManagerServiceTests
             "GetProtocolInfo");
 
         Assert.Equal(string.Empty, values["Source"]);
-        Assert.Equal("http-get:*:*:*", values["Sink"]);
+
+        // The sink list must enumerate real formats; a wildcard makes control points believe the
+        // renderer accepts nothing. See ConnectionManagerProtocolInfoTests.
+        Assert.NotEqual("http-get:*:*:*", values["Sink"]);
+        Assert.Contains("http-get:*:video/mp4", values["Sink"], StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("http-get:*:audio/mpeg", values["Sink"], StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

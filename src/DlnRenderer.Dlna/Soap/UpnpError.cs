@@ -14,6 +14,14 @@ public static class UpnpErrorCode
     public const int InvalidInstanceId = 718;
     public const int ResourceNotFound = 716;
     public const int TransportIsLocked = 705;
+
+    // RenderingControl error codes are a separate, service-local namespace: the same numeric value
+    // means something different in AVTransport, so these carry their own names.
+    /// <summary>RenderingControl: the requested preset name does not exist.</summary>
+    public const int RenderingInvalidName = 701;
+
+    /// <summary>RenderingControl: the requested channel does not exist on this renderer.</summary>
+    public const int RenderingInvalidChannel = 402;
 }
 
 /// <summary>Maps a protocol failure onto a SOAP fault with a specific UPnP error code.</summary>

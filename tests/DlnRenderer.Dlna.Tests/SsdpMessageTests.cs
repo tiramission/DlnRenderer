@@ -60,8 +60,9 @@ public class SsdpMessageTests
     [InlineData("upnp:rootdevice", true)]
     [InlineData("urn:schemas-upnp-org:device:MediaRenderer:1", true)]
     [InlineData("uuid:11111111-2222-3333-4444-555555555555", false)]
-    [InlineData("urn:schemas-upnp-org:service:AVTransport:1", false)]
+    [InlineData("urn:schemas-upnp-org:service:AVTransport:1", true)]
     [InlineData("urn:schemas-upnp-org:device:MediaServer:1", false)]
+    [InlineData("urn:schemas-upnp-org:service:ContentDirectory:1", false)]
     public void Matches_only_targets_this_device_answers(string searchTarget, bool expected)
     {
         Assert.Equal(expected, SsdpMessage.Matches(searchTarget, DeviceUuid));
@@ -72,7 +73,8 @@ public class SsdpMessageTests
     {
         var targets = SsdpMessage.AdvertisedTargets(DeviceUuid);
 
-        Assert.Equal(3, targets.Count);
+        // Root, the bare udn, the device type and one entry per implemented service.
+        Assert.Equal(6, targets.Count);
         Assert.Contains(targets, t => t.SearchTarget == "upnp:rootdevice" && t.Usn == $"uuid:{DeviceUuid:D}::upnp:rootdevice");
         Assert.Contains(targets, t => t.SearchTarget == $"uuid:{DeviceUuid:D}" && t.Usn == $"uuid:{DeviceUuid:D}");
         Assert.Contains(targets, t => t.SearchTarget == SsdpConstants.MediaRendererDeviceType);

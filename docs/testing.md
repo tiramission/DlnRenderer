@@ -119,3 +119,56 @@ pwsh tools/control-point/ipc-check.ps1
   尚未完成该项验收。需在真实手机上补测。
 - **声音可听**：已验证 `ao=wasapi` 实际输出，但未经人耳确认。
 - ARM64 与 Windows 10 未实测。
+
+---
+
+## 3. 局域网发现专项验证（真实手机控制端）
+
+### 3.1 环境
+
+| 项 | 值 |
+| --- | --- |
+| 电脑 | Windows 11 build 26300，以太网 `192.168.1.9/24`，网关 `192.168.1.1` |
+| 其他网卡 | Hyper-V `172.25.96.1`、WSL `172.20.80.1`、VPN 隧道 `198.18.0.1`（均为虚拟/隧道） |
+| 手机 | 同一 Wi-Fi `192.168.1.x` |
+| 控制端 | BubbleUPnP、手机视频 App 的「投屏」按钮 |
+| 防火墙 | 自定义 `_all` 入站规则（Allow / Any），未阻断 |
+| 系统服务 | Windows `SSDPSRV` 正在运行并占用 UDP 1900 |
+
+### 3.2 诊断手段
+
+本机发出的多播不会被本机监听器收到，**无法用本机抓包观察服务自身的响应**，
+因此按下列方式取证：
+
+1. 服务端日志区分「未收到请求 / 收到但未匹配 / 已发送响应」，并记录来源地址、ST、LOCATION。
+2. HTTP 层记录每个 `GET`/`POST` 的来源地址与 SOAP 动作名。
+3. 以前一版本 `validate-description.ps1` 逐项校验描述文档结构。
+4. 用真实手机控制端反复回访，观察它是否继续请求 SCPD 与 SOAP。
+
+### 3.3 结果对照
+
+| 阶段 | BubbleUPnP | 视频 App | 判定依据 |
+| --- | --- | --- | --- |
+| 初始版本 | 找不到 | 找不到 | 服务只应答设备级 ST，客户端取描述后不再请求 SCPD |
+| 补 `X_DLNADOC`/`URLBase`/相对 URL | 找不到 | 找不到 | 客户端仍只取描述 |
+| 补服务级 ST 应答 | **能找到** | 找不到 | BubbleUPnP 搜 `service:AVTransport:1`，此前被判定「not answered」 |
+| 换成 MiniCast 的 392 条协议清单 | 能找到 | 找不到 | 解决「可见但不可投送」 |
+| **描述改用默认命名空间（去掉 `d:` 前缀）** | **能找到** | **能找到并投屏** | 投屏链路 `SetAVTransportURI → 加载 → Play` 全部出现在日志中 |
+
+### 3.4 投屏链路日志（实测节选）
+
+```text
+soap action SetAVTransportURI from 192.168.1.72
+player loading http://192.168.1.72:33649/xxxx.mp4
+soap action Play from 192.168.1.72
+player command play applied
+soap action GetTransportInfo from 192.168.1.72   (控制端持续轮询)
+```
+
+### 3.5 仍然存在的限制
+
+- 「系统投屏」（控制中心里的投屏按钮）在 Android 上通常是 Miracast/Wi-Fi Direct，
+  与 DLNA 是不同协议；本机 WLAN 断开时它看不到设备属预期。DLNA 投送请用
+  视频 App 或 BubbleUPnP 内的「投屏/渲染器」入口。
+- GENA 事件未实现，控制端靠轮询获取状态。
+- 未做长时间播放与网络中断恢复的压力测试。

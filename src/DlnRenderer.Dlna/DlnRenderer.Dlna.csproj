@@ -15,4 +15,15 @@
     <InternalsVisibleTo Include="DlnRenderer.Dlna.Tests" />
   </ItemGroup>
 
+  <!--
+    SinkProtocolInfo is the list of media formats the renderer advertises through
+    ConnectionManager.GetProtocolInfo. Control points negotiate against this list before pushing
+    media; a wildcard-only list makes the renderer visible but unplayable.
+    The file is taken verbatim from the MiniCast renderer (MIT), which is verified to work with
+    vendor casting clients.
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="Upnp\SinkProtocolInfo.csv" LogicalName="DlnRenderer.Dlna.SinkProtocolInfo.csv" />
+  </ItemGroup>
+
 </Project>

@@ -16,10 +16,13 @@ public sealed record DlnaOptions
     /// <summary>Stable device UUID. Must not change between runs, or control points see a new device.</summary>
     public Guid Uuid { get; init; }
 
-    /// <summary>HTTP port for description and control endpoints. 0 lets the OS pick one.</summary>
+    /// <summary>
+    /// HTTP port for description and control endpoints. The service always supplies a concrete
+    /// value; 0 (ephemeral) is only used by tests that do not care about a stable address.
+    /// </summary>
     public int HttpPort { get; init; }
 
-    /// <summary>Address advertised in LOCATION. Defaults to the first suitable LAN address.</summary>
+    /// <summary>Address advertised in <c>LOCATION</c> when the caller cannot infer one.</summary>
     public IPAddress? ListenAddress { get; init; }
 
     /// <summary>Disable only in tests that exercise HTTP without multicast.</summary>
@@ -30,7 +33,7 @@ public sealed record DlnaOptions
 
     public TimeSpan MaxAge { get; init; } = TimeSpan.FromMinutes(30);
 
-    public string ServerHeader { get; init; } = "Windows/10.0 UPnP/1.1 DlnRenderer/0.1";
+    public string ServerHeader { get; init; } = "Windows/10 UPnP/1.0 DlnRenderer/0.1";
 
     public string Udn => $"uuid:{Uuid:D}";
 }

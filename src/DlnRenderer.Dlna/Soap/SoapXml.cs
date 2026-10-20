@@ -12,6 +12,7 @@ public static class SoapNamespaces
 
     public const string AvTransportServiceType = "urn:schemas-upnp-org:service:AVTransport:1";
     public const string ConnectionManagerServiceType = "urn:schemas-upnp-org:service:ConnectionManager:1";
+    public const string RenderingControlServiceType = "urn:schemas-upnp-org:service:RenderingControl:1";
 }
 
 /// <summary>A parsed SOAP control request.</summary>

@@ -19,6 +19,7 @@ public sealed class DlnaDeviceHost : IAsyncDisposable
     private readonly Action<string> _log;
     private readonly AvTransportService _avTransport;
     private readonly ConnectionManagerService _connectionManager = new();
+    private readonly RenderingControl.RenderingControlService _renderingControl;
 
     private SimpleHttpServer? _http;
     private SsdpServer? _ssdp;
@@ -33,6 +34,7 @@ public sealed class DlnaDeviceHost : IAsyncDisposable
         _renderer = renderer;
         _log = log ?? (_ => { });
         _avTransport = new AvTransportService(renderer, _log);
+        _renderingControl = new RenderingControl.RenderingControlService(renderer, _log);
     }
 
     public bool IsRunning => _http is not null;
@@ -63,9 +65,9 @@ public sealed class DlnaDeviceHost : IAsyncDisposable
 
         var advertised = _options.ListenAddress ?? SelectAddress();
         var baseUrl = $"http://{advertised}:{http.Port}";
-        var description = DeviceDescriptionBuilder.Build(_options);
         var avTransportScpd = ScpdBuilder.BuildAvTransport();
         var connectionManagerScpd = ScpdBuilder.BuildConnectionManager();
+        var renderingControlScpd = ScpdBuilder.BuildRenderingControl();
 
         _http = http;
         DescriptionUrl = baseUrl + DlnaPaths.Description;
@@ -90,14 +92,37 @@ public sealed class DlnaDeviceHost : IAsyncDisposable
             }
         }
 
-        _description = description;
+        _description = string.Empty;
         _avTransportScpd = avTransportScpd;
         _connectionManagerScpd = connectionManagerScpd;
+        _renderingControlScpd = renderingControlScpd;
     }
 
     private string _description = string.Empty;
     private string _avTransportScpd = string.Empty;
     private string _connectionManagerScpd = string.Empty;
+    private string _renderingControlScpd = string.Empty;
+
+    /// <summary>
+    /// Builds the device description for the address the control point actually used.
+    /// <c>URLBase</c> must match a reachable endpoint on a multi-homed host, so it is derived from
+    /// the request's Host header instead of a single configured address.
+    /// </summary>
+    private string BuildDescription(DlnHttpRequest request)
+    {
+        string? urlBase = null;
+        if (request.Headers.TryGetValue("Host", out var host) && !string.IsNullOrWhiteSpace(host))
+        {
+            // Only trust a syntactically valid authority; never reflect arbitrary header content.
+            if (Uri.TryCreate($"http://{host.Trim()}/", UriKind.Absolute, out var parsed)
+                && parsed.Port > 0)
+            {
+                urlBase = $"http://{parsed.Host}:{parsed.Port}";
+            }
+        }
+
+        return DeviceDescriptionBuilder.Build(_options, urlBase);
+    }
 
     public async ValueTask DisposeAsync()
     {
@@ -134,13 +159,17 @@ public sealed class DlnaDeviceHost : IAsyncDisposable
 
     private async Task<DlnHttpResponse> HandleRequestAsync(DlnHttpRequest request, CancellationToken cancellationToken)
     {
+        // Every control-point interaction is logged: this is what distinguishes a client that
+        // never fetched the description from one that fetched it and rejected the result.
+        _log($"http {request.Method} {request.Path} from {request.RemoteAddress ?? "?"}");
         try
         {
             return request.Path switch
             {
-                DlnaPaths.Description => Get(request, _description),
+                DlnaPaths.Description => Get(request, BuildDescription(request)),
                 DlnaPaths.AvTransportScpd => Get(request, _avTransportScpd),
                 DlnaPaths.ConnectionManagerScpd => Get(request, _connectionManagerScpd),
+                DlnaPaths.RenderingControlScpd => Get(request, _renderingControlScpd),
                 DlnaPaths.AvTransportControl => await HandleSoapAsync(
                     request,
                     r => _avTransport.HandleAsync(r, cancellationToken),
@@ -149,7 +178,11 @@ public sealed class DlnaDeviceHost : IAsyncDisposable
                     request,
                     r => Task.FromResult(_connectionManager.Handle(r)),
                     cancellationToken).ConfigureAwait(false),
-                DlnaPaths.AvTransportEvent or DlnaPaths.ConnectionManagerEvent =>
+                DlnaPaths.RenderingControlControl => await HandleSoapAsync(
+                    request,
+                    r => _renderingControl.HandleAsync(r, cancellationToken),
+                    cancellationToken).ConfigureAwait(false),
+                DlnaPaths.AvTransportEvent or DlnaPaths.ConnectionManagerEvent or DlnaPaths.RenderingControlEvent =>
                     DlnHttpResponse.Text(501, "GENA eventing is not implemented by this renderer."),
                 _ => DlnHttpResponse.Text(404, "not found"),
             };
@@ -182,6 +215,10 @@ public sealed class DlnaDeviceHost : IAsyncDisposable
 
         request.Headers.TryGetValue("SOAPAction", out var soapAction);
         var parsed = SoapXml.Parse(request.Body, soapAction);
+
+        // Log the action name: polling loops make "POST /control/avtransport" alone useless for
+        // telling a control point that never sets a URI apart from one that does.
+        _log($"soap action {parsed.Action} from {request.RemoteAddress ?? "?"}");
         var response = await handler(parsed).ConfigureAwait(false);
         _ = cancellationToken;
         return DlnHttpResponse.Soap(response);

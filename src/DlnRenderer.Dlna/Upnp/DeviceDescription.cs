@@ -1,3 +1,5 @@
+using System.Text;
+using System.Xml;
 using System.Xml.Linq;
 using DlnRenderer.Dlna.Soap;
 
@@ -8,32 +10,61 @@ public static class DlnaPaths
     public const string Description = "/description.xml";
     public const string AvTransportScpd = "/scpd/avtransport.xml";
     public const string ConnectionManagerScpd = "/scpd/connectionmanager.xml";
+    public const string RenderingControlScpd = "/scpd/renderingcontrol.xml";
     public const string AvTransportControl = "/control/avtransport";
     public const string ConnectionManagerControl = "/control/connectionmanager";
+    public const string RenderingControlControl = "/control/renderingcontrol";
     public const string AvTransportEvent = "/event/avtransport";
     public const string ConnectionManagerEvent = "/event/connectionmanager";
+    public const string RenderingControlEvent = "/event/renderingcontrol";
 }
 
 public static class UpnpNamespaces
 {
     public static readonly XNamespace Device = "urn:schemas-upnp-org:device-1-0";
     public static readonly XNamespace Service = "urn:schemas-upnp-org:service-1-0";
+
+    /// <summary>
+    /// DLNA device-profile namespace. Control points look for <c>dlna:X_DLNADOC</c> to decide
+    /// whether a device is a renderer they may target.
+    /// </summary>
+    public static readonly XNamespace Dlna = "urn:schemas-dlna-org:device-1-0";
 }
 
 /// <summary>Builds the UPnP device description. Only implemented services are declared.</summary>
+/// <remarks>
+/// The document uses the default (unprefixed) namespace for the device elements, matching the
+/// renderers that vendor casting clients are known to work with. Emitting the same elements with a
+/// <c>d:</c> prefix is spec-valid, but clients that compare element names textually - rather than
+/// resolving namespaces - then fail to recognise the device even though discovery succeeded.
+/// </remarks>
 public static class DeviceDescriptionBuilder
 {
-    public static string Build(DlnaOptions options)
+    /// <summary>
+    /// DLNA device profile. <c>DMR-1.50</c> declares the standard Digital Media Renderer role;
+    /// it is a capability marker required by DLNA-aware clients, not a certification claim.
+    /// </summary>
+    public const string DlnaDeviceProfile = "DMR-1.50";
+
+    public static string Build(DlnaOptions options, string? urlBase = null)
     {
-        var device = new XElement(UpnpNamespaces.Device + "device",
-            Element("deviceType", Ssdp.SsdpConstants.MediaRendererDeviceType),
-            Element("friendlyName", options.FriendlyName),
-            Element("manufacturer", options.Manufacturer),
-            Element("modelDescription", "DLNA media renderer"),
-            Element("modelName", options.ModelName),
-            Element("modelNumber", options.ModelNumber),
-            Element("UDN", options.Udn),
-            new XElement(UpnpNamespaces.Device + "serviceList",
+        // Elements are created unqualified and then given the default namespace below; this keeps
+        // the serialized form free of prefixes.
+        XElement Device(string name, params object[] content) => new(name, content);
+
+        var device = Device("device",
+            Device("deviceType", Ssdp.SsdpConstants.MediaRendererDeviceType),
+            Device("UDN", options.Udn),
+            Device("friendlyName", options.FriendlyName),
+            Device("manufacturer", options.Manufacturer),
+            Device("modelDescription", "DLNA media renderer"),
+            Device("modelName", options.ModelName),
+            Device("modelNumber", options.ModelNumber),
+            // Declared with its own xmlns:dlna exactly as DLNA clients expect to find it.
+            new XElement("X_DLNADOC",
+                new XAttribute(XNamespace.Xmlns + "dlna", UpnpNamespaces.Dlna),
+                DlnaDeviceProfile),
+            Device("serviceList",
                 ServiceElement(
                     SoapNamespaces.AvTransportServiceType,
                     "urn:upnp-org:serviceId:AVTransport",
@@ -41,40 +72,73 @@ public static class DeviceDescriptionBuilder
                     DlnaPaths.AvTransportControl,
                     DlnaPaths.AvTransportEvent),
                 ServiceElement(
+                    SoapNamespaces.RenderingControlServiceType,
+                    "urn:upnp-org:serviceId:RenderingControl",
+                    DlnaPaths.RenderingControlScpd,
+                    DlnaPaths.RenderingControlControl,
+                    DlnaPaths.RenderingControlEvent),
+                ServiceElement(
                     SoapNamespaces.ConnectionManagerServiceType,
                     "urn:upnp-org:serviceId:ConnectionManager",
                     DlnaPaths.ConnectionManagerScpd,
                     DlnaPaths.ConnectionManagerControl,
                     DlnaPaths.ConnectionManagerEvent)));
 
-        var document = new XDocument(
-            new XDeclaration("1.0", "utf-8", null),
-            new XElement(UpnpNamespaces.Device + "root",
-                new XAttribute(XNamespace.Xmlns + "d", UpnpNamespaces.Device),
-                Element("specVersion",
-                    Element("major", "1"),
-                    Element("minor", "0")),
-                device));
+        _ = urlBase;
 
-        return document.ToString(SaveOptions.DisableFormatting);
+        var root = Device("root",
+            new XAttribute(XNamespace.Xmlns + "dlna", UpnpNamespaces.Dlna),
+            Device("specVersion",
+                Device("major", "1"),
+                Device("minor", "0")),
+            device);
+
+        // Apply the UPnP device namespace as the default namespace for every unqualified element.
+        foreach (var element in root.DescendantsAndSelf().Where(e => e.Name.Namespace == XNamespace.None))
+        {
+            element.Name = UpnpNamespaces.Device + element.Name.LocalName;
+        }
+
+        // X_DLNADOC belongs to the DLNA namespace; re-qualify it after the loop above.
+        var dlnaDoc = root.Descendants().Single(e => e.Name.LocalName == "X_DLNADOC");
+        dlnaDoc.Name = UpnpNamespaces.Dlna + "X_DLNADOC";
+        dlnaDoc.SetAttributeValue(XNamespace.Xmlns + "dlna", null);
+
+        var document = new XDocument(new XDeclaration("1.0", "utf-8", null), root);
+
+        return SerializeWithDeclaration(document);
     }
 
     private static XElement ServiceElement(string serviceType, string serviceId, string scpd, string control, string events)
-        => Element("service",
-            Element("serviceType", serviceType),
-            Element("serviceId", serviceId),
-            Element("SCPDURL", scpd),
-            Element("controlURL", control),
-            Element("eventSubURL", events));
+        => new("service",
+            new XElement("serviceType", serviceType),
+            new XElement("serviceId", serviceId),
+            new XElement("controlURL", control.TrimStart('/')),
+            new XElement("eventSubURL", events.TrimStart('/')),
+            new XElement("SCPDURL", scpd.TrimStart('/')));
 
-    private static XElement Element(string name, params object[] content)
-        => new(UpnpNamespaces.Device + name, content);
+    /// <summary>
+    /// Serializes with an explicit XML declaration. <see cref="XDocument.ToString()"/> drops the
+    /// declaration entirely, and some casting clients reject a description that lacks one.
+    /// </summary>
+    internal static string SerializeWithDeclaration(XDocument document)
+    {
+        var settings = new XmlWriterSettings
+        {
+            OmitXmlDeclaration = false,
+            Encoding = new UTF8Encoding(false),
+        };
 
-    private static XElement Element(string name, string value)
-        => new(UpnpNamespaces.Device + name, value);
+        using var buffer = new MemoryStream();
+        using (var writer = XmlWriter.Create(buffer, settings))
+        {
+            document.Save(writer);
+        }
+
+        return Encoding.UTF8.GetString(buffer.ToArray());
+    }
 }
 
-/// <summary>Service Control Protocol Documents for the two declared services.</summary>
 public static class ScpdBuilder
 {
     public static string BuildAvTransport()
@@ -207,6 +271,48 @@ public static class ScpdBuilder
         return BuildScpd(actions, variables);
     }
 
+    public static string BuildRenderingControl()
+    {
+        var actions = new List<XElement>
+        {
+            Action("ListPresets",
+                In("InstanceID", "A_ARG_TYPE_InstanceID"),
+                Out("CurrentPresetNameList", "PresetNameList")),
+            Action("SelectPreset",
+                In("InstanceID", "A_ARG_TYPE_InstanceID"),
+                In("PresetName", "A_ARG_TYPE_PresetName")),
+            Action("GetMute",
+                In("InstanceID", "A_ARG_TYPE_InstanceID"),
+                In("Channel", "A_ARG_TYPE_Channel"),
+                Out("CurrentMute", "Mute")),
+            Action("SetMute",
+                In("InstanceID", "A_ARG_TYPE_InstanceID"),
+                In("Channel", "A_ARG_TYPE_Channel"),
+                In("DesiredMute", "Mute")),
+            Action("GetVolume",
+                In("InstanceID", "A_ARG_TYPE_InstanceID"),
+                In("Channel", "A_ARG_TYPE_Channel"),
+                Out("CurrentVolume", "Volume")),
+            Action("SetVolume",
+                In("InstanceID", "A_ARG_TYPE_InstanceID"),
+                In("Channel", "A_ARG_TYPE_Channel"),
+                In("DesiredVolume", "Volume")),
+        };
+
+        var variables = new List<XElement>
+        {
+            Variable("PresetNameList", "string", false),
+            Variable("LastChange", "string", true),
+            Variable("Mute", "boolean", false),
+            Variable("Volume", "ui2", false, min: "0", max: "100", step: "1"),
+            Variable("A_ARG_TYPE_Channel", "string", false, ["Master"]),
+            Variable("A_ARG_TYPE_InstanceID", "ui4", false),
+            Variable("A_ARG_TYPE_PresetName", "string", false, ["FactoryDefaults"]),
+        };
+
+        return BuildScpd(actions, variables);
+    }
+
     private static string BuildScpd(IEnumerable<XElement> actions, IEnumerable<XElement> variables)
     {
         var document = new XDocument(
@@ -247,7 +353,14 @@ public static class ScpdBuilder
             new XElement(UpnpNamespaces.Service + "direction", direction),
             new XElement(UpnpNamespaces.Service + "relatedStateVariable", relatedStateVariable));
 
-    private static XElement Variable(string name, string dataType, bool sendEvents, string[]? allowedValues = null)
+    private static XElement Variable(
+        string name,
+        string dataType,
+        bool sendEvents,
+        string[]? allowedValues = null,
+        string? min = null,
+        string? max = null,
+        string? step = null)
     {
         var variable = new XElement(UpnpNamespaces.Service + "stateVariable",
             new XAttribute("sendEvents", sendEvents ? "yes" : "no"),
@@ -258,6 +371,27 @@ public static class ScpdBuilder
         {
             variable.Add(new XElement(UpnpNamespaces.Service + "allowedValueList",
                 allowedValues.Select(v => new XElement(UpnpNamespaces.Service + "allowedValue", v))));
+        }
+
+        if (min is not null || max is not null)
+        {
+            var range = new XElement(UpnpNamespaces.Service + "allowedValueRange");
+            if (min is not null)
+            {
+                range.Add(new XElement(UpnpNamespaces.Service + "minimum", min));
+            }
+
+            if (max is not null)
+            {
+                range.Add(new XElement(UpnpNamespaces.Service + "maximum", max));
+            }
+
+            if (step is not null)
+            {
+                range.Add(new XElement(UpnpNamespaces.Service + "step", step));
+            }
+
+            variable.Add(range);
         }
 
         return variable;

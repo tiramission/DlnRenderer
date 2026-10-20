@@ -135,7 +135,14 @@ internal sealed record ServiceStartupOptions
 
     public string FriendlyName { get; init; } = "DlnRenderer";
 
-    public int HttpPort { get; init; }
+    /// <summary>
+    /// Stable default HTTP port. A fixed port keeps the advertised LOCATION identical across
+    /// restarts, which is what firewall rules, control-point caches and bookmarks depend on.
+    /// Pass <c>--http-port 0</c> to fall back to an ephemeral port.
+    /// </summary>
+    public const int DefaultHttpPort = 18090;
+
+    public int HttpPort { get; init; } = DefaultHttpPort;
 
     public bool Ssdp { get; init; } = true;
 
