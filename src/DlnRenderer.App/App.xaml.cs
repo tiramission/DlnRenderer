@@ -37,12 +37,6 @@ public partial class App : Application
         WinRT.Interop.WindowNative.GetWindowHandle(Window);
 
     /// <summary>
-    /// Optional media file supplied on the command line (<c>--play &lt;path&gt;</c> or a bare path).
-    /// Used for scripted playback verification.
-    /// </summary>
-    public static string? StartupMediaPath { get; private set; }
-
-    /// <summary>
     /// Initializes the singleton application object.
     /// </summary>
     public App()
@@ -56,32 +50,13 @@ public partial class App : Application
     /// <param name="args">Details about the launch request and process.</param>
     protected override void OnLaunched(Microsoft.UI.Xaml.LaunchActivatedEventArgs args)
     {
+        // Playback is owned by the service, so the UI only needs its diagnostics switch.
         var commandLine = Environment.GetCommandLineArgs();
-        StartupMediaPath = ParseStartupMediaPath(commandLine);
         DiagnosticsLog.Configure(GetOptionValue(commandLine, "--log"));
 
         Window = new MainWindow();
         DispatcherQueue = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread();
         Window.Activate();
-    }
-
-    private static string? ParseStartupMediaPath(string[] commandLine)
-    {
-        var explicitPath = GetOptionValue(commandLine, "--play");
-        if (!string.IsNullOrWhiteSpace(explicitPath))
-        {
-            return explicitPath;
-        }
-
-        for (var i = 1; i < commandLine.Length; i++)
-        {
-            if (!commandLine[i].StartsWith('-') && File.Exists(commandLine[i]))
-            {
-                return commandLine[i];
-            }
-        }
-
-        return null;
     }
 
     private static string? GetOptionValue(string[] commandLine, string name)

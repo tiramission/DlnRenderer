@@ -188,10 +188,13 @@ AVTransport（`SetAVTransportURI`、`GetTransportInfo`、`GetPositionInfo`、`Pl
 | `DlnRenderer.Core.Tests` | **已创建**（25 个测试） | 验证播放状态转换规则 |
 | `DlnRenderer.Player` | **已创建**（阶段 1.5） | libmpv P/Invoke、播放器生命周期、状态映射、Win32 视频子窗口 |
 | `DlnRenderer.Player.Tests` | **已创建**（15 个测试） | 状态映射、节流规则、原生播放/错误/顺序加载/释放 |
-| `DlnRenderer.Dlna` | 未创建 | 阶段 3 才有真实代码，现在创建即为空项目 |
-| `DlnRenderer.Service` | 未创建 | 阶段 1 实现 IPC 时创建，届时才有可运行内容 |
+| `DlnRenderer.Dlna` | **已创建**（阶段 3） | SSDP、HTTP、SOAP、AVTransport、ConnectionManager、DIDL、SCPD |
+| `DlnRenderer.Dlna.Tests` | **已创建**（110 个测试） | 协议解析、Fault 码、回环 HTTP 集成、网卡选择 |
+| `DlnRenderer.Service` | **已创建**（阶段 3） | 独立后台进程：播放会话、DLNA 宿主、IPC 服务端、原生视频窗口 |
+| `DlnRenderer.Service.Tests` | **已创建**（13 个测试） | 真实 Named Pipe：命令、事件、错误、断连、协议违规 |
 
-依赖方向（已建立）：`App → Core, Player`；`Player.Tests, Core.Tests → Core / Player`。`Core` 不反向依赖任何上层。
+依赖方向（已建立）：`App → Core`；`Service → Core, Dlna, Player`；`Dlna → Core`；`Player → Core`。
+`Core` 不反向依赖任何上层，且不引用 WinUI 或 native 代码。
 
 Core 当前内容：
 
@@ -243,8 +246,8 @@ winapp run src/DlnRenderer.App -c Debug --detach
 | `dotnet restore` / `--locked-mode` | 均成功（锁文件仅用于 App，理由见 §10.4） |
 | `dotnet build DlnRenderer.sln -c Debug` | 成功，0 错误，0 警告（模板示例 ViewModel 已被真实播放器 UI 替换） |
 | 输出架构 | `src/DlnRenderer.App/bin/x64/Debug/net10.0-windows10.0.26100.0/win-x64/` |
-| `dotnet test` | 通过 40 / 失败 0（Core 25 + Player 15） |
-| `winapp run --detach` | 成功启动，窗口可交互（详见 §10.6 的播放验证） |
+| `dotnet test` | 通过 163 / 失败 0（Core 25 + Player 15 + Dlna 110 + Service 13） |
+| `winapp run --detach` | 成功启动，窗口可交互（详见 §10.6 与 §11） |
 
 构建过程中修复过一个真实缺陷：`PlaybackStateRules` 原先在检查枚举有效性之前先判定"同状态即合法"，
 导致未定义值 `(PlaybackState)42` 自比较时被放行；已调整顺序，由单元测试覆盖。
@@ -257,11 +260,14 @@ winapp run src/DlnRenderer.App -c Debug --detach
    在做出决定前，播放器只作本地开发验证，不随包分发。详见 §10.1。
 2. **ARM64 未验证**：有 `aarch64` 产物，但本机为 x64，未实测。
 3. **Windows 10 兼容性未验证**：`TargetPlatformMinVersion` 为 17763，但本机只有 Windows 11 26300。
-4. **仓库不在 Git 管理下**：本轮无法提交锁文件，也无法提供 diff；`packages.lock.json` 已生成，待纳入版本控制。
+4. **仓库已纳入 Git**：基线提交为 `1ecb98f`；`packages.lock.json` 已入库。
 5. **模板包为 0.0.7-alpha**：模板本身是预发布产物，生成的文件结构与后续 `winapp` 版本可能变化。
 6. **GitHub 不可达**：影响拉取依赖源码、核对许可证与上游实现；需网络环境支持或改用镜像。
-7. **视频与 XAML 的层叠限制**：视频是原生子窗口，始终绘制在 XAML 之上，无法被 XAML 内容覆盖（见 §10.3）。
+7. **视频不再与 XAML 重叠**：阶段 3 起视频由**服务进程**的原生窗口呈现，UI 进程不再承载视频表面，
+   §10.3 中“子窗口遮挡 XAML”的约束只适用于 UI 内嵌场景（当前未使用）。
 8. **构建工具再分发**：`Microsoft.Windows.SDK.BuildTools` 受 Windows SDK 许可约束，发布前需确认打包内容。
+9. **GENA 事件未实现**：`SUBSCRIBE` 返回 501，控制端需轮询 `GetTransportInfo`（详见 §11.3）。
+10. **RenderingControl 未实现**：音量的 DLNA 侧控制缺失，目前只能经 IPC 调整。
 
 ---
 
@@ -387,3 +393,70 @@ sha256 `38acd030...`）的 `mpv-configuration` **同样不含** `-Dgpl=false`，
    改为解析 `track-list` 并忽略 `albumart`。
 3. 替换播放：旧文件结束事件会清掉“加载中”标记，使新媒体卡在 `Stopped`；已区分替换与真实结束/错误。
 4. 层级：WinUI 内容桥接窗口会盖住视频子窗口；已在尺寸/可见性变化时重新置顶。
+
+---
+
+## 11. 阶段 3：DLNA MVP（已验证）
+
+### 11.1 进程与职责划分
+
+| 进程 / 模块 | 职责 |
+| --- | --- |
+| `DlnRenderer.Service.exe` | 后台常驻：SSDP、HTTP/SOAP、播放会话、IPC 服务端、原生视频窗口 |
+| `DlnRenderer.App`（WinUI） | 只做状态展示与 IPC 控制；**不持有播放器，也不承载视频** |
+| `DlnRenderer.Dlna` | 纯协议层，不引用 WinUI，也不直接引用 native 播放器 |
+| `DlnRenderer.Player` | libmpv 适配；被服务引用，UI 已不再引用 |
+
+这样做的直接理由：AGENTS.md 要求「UI 退出不应导致服务停止，服务负责播放引擎协调」。
+若视频仍渲染在 UI 进程里，关闭窗口就必然中断画面，两种要求无法同时成立。
+因此把视频窗口移到服务进程（`VideoPresenter`，一个带消息循环的 Win32 顶层窗口 + 子 HWND 作为 mpv `wid`）。
+
+实测：关闭 UI 后服务仍存活、仍可被发现与描述；重新打开 UI 会**复用**同一服务实例（未产生重复进程）。
+
+### 11.2 协议覆盖（仅声明已实现的部分）
+
+| 能力 | 状态 |
+| --- | --- |
+| SSDP 应答 `ssdp:all` / `upnp:rootdevice` / `MediaRenderer:1` / `uuid:...` | 已实现，实测返回 3 条标准响应 |
+| `ssdp:alive` / `ssdp:byebye` 公告 | 已实现（启动、周期、优雅退出） |
+| 设备描述、AVTransport 与 ConnectionManager 的 SCPD | 已实现 |
+| AVTransport：`SetAVTransportURI`、`Play`、`Pause`、`Stop`、`Seek`、`GetTransportInfo`、`GetPositionInfo`、`GetMediaInfo`、`GetDeviceCapabilities`、`GetTransportSettings`、`GetCurrentTransportActions` | 已实现 |
+| ConnectionManager：`GetProtocolInfo`、`GetCurrentConnectionIDs`、`GetCurrentConnectionInfo` | 已实现，sink 仅声明 `http-get:*:*:*` |
+| GENA（`SUBSCRIBE`/`NOTIFY`） | **未实现**，返回 501 |
+| RenderingControl（音量/静音） | **未实现** |
+
+设备描述中**没有**写入 `X_DLNADOC` 等 DLNA 认证标记：本项目未做 DLNA 认证，不应宣称符合某版本规范。
+
+### 11.3 关键设计决定
+
+1. **媒体 URI 只允许 `http` / `https`。**
+   `file:` 与裸 Windows 路径（`C:\...`）都会被 `Uri` 解析为 file scheme，若放行，DLNA 控制接口就变成了
+   任意本地文件读取入口。实测两个用例（`file:///...`、`C:\media\a.mp4`）均被拒绝。
+2. **错误必须如实上报。**
+   - 无媒体时 `Post/Pause/Seek` → `701`；`InstanceID != 0` → `718`；非法 URI → `600`；
+     未知动作 → `401`；播放器执行失败 → `501`（不再以原始异常冒泡成无错误码的 500）。
+   - IPC 侧同样不伪装：无媒体时 `Play` 返回失败，而不是“成功但状态仍是 Stopped”。
+3. **`Stop` 保留当前 URI**（符合 AVTransport 语义），因此 `Play` 需要检测“有 URI 但播放器已卸载”并重新加载。
+   这是本轮实测发现的真实缺陷：直接 `Play` 会成功返回，但 mpv 里没有任何媒体。
+4. **按网卡给出 LOCATION。**
+   每个 SSDP socket 都用自己的本地地址生成 `LOCATION`，HTTP 绑定 `0.0.0.0` 接收所有网卡。
+   实测发现本机存在 `198.18.0.1`（VPN/隧道保留段），若被选中，局域网控制端无法访问其描述 URL；
+   已在网卡选择中排除 `198.18.0.0/15`、`169.254.0.0/16`、`Tunnel` 类型，并优先以太网/Wi-Fi。
+5. **命名管道缓冲必须显式设置。**
+   `PipeOptions.Asynchronous` 的默认缓冲区很小；服务端推送快照与客户端下发命令同时发生时，
+   两个方向都会被填满并互相等待，表现为 IPC 测试挂起。服务端统一使用
+   `IpcProtocol.PipeBufferBytes`（256 KiB）；客户端无法指定缓冲区，因此由服务端决定。
+6. **IPC 安全**：`PipeOptions.CurrentUserOnly`，只允许当前用户连接；消息带版本、请求 ID、
+   4 字节长度前缀、64 KiB 上限与 30 s 读超时。
+
+### 11.4 实测结果
+
+见 `docs/testing.md` §2.3。要点：真实 SSDP 发现 → 描述 → `SetAVTransportURI` → `Play` →
+`GetPositionInfo` 位置推进 → `Pause` → `Seek` → `Stop` 全部通过；服务窗口内确实渲染出视频画面；
+UI 退出后服务继续工作，UI 重启后复用原服务。
+
+### 11.5 尚未完成
+
+- 第三方控制端（手机 App / Windows「投送到设备」）实测：本机没有可用的第三方 DLNA 控制端，未完成。
+- GENA 事件、RenderingControl、字幕与多音轨。
+- 服务作为 Windows 服务的安装/交互式会话问题（首版明确不采用）。

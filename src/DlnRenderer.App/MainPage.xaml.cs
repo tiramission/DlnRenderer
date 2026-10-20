@@ -1,13 +1,12 @@
 using DlnRenderer.ViewModels;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Windows.Storage.Pickers;
 
 namespace DlnRenderer;
 
 /// <summary>
-/// Minimal playback page: opens a local file, shows transport controls, and hosts the native
-/// libmpv video window over the placeholder area.
+/// Minimal status page. Playback and DLNA discovery run in the renderer service, so this page only
+/// shows the pushed state and forwards transport commands over the local pipe.
 /// </summary>
 public sealed partial class MainPage : Page
 {
@@ -21,7 +20,6 @@ public sealed partial class MainPage : Page
     {
         InitializeComponent();
         Loaded += OnLoaded;
-        SizeChanged += (_, _) => UpdateVideoBounds();
         ViewModel.PropertyChanged += OnViewModelPropertyChanged;
     }
 
@@ -36,60 +34,12 @@ public sealed partial class MainPage : Page
 
         try
         {
-            ViewModel.Initialize(App.WindowHandle);
+            await ViewModel.InitializeAsync();
         }
         catch (Exception ex)
         {
-            // Surfacing the failure is the point: a silent black player is worse than an error.
-            ViewModel.ReportInitializationFailure(ex.Message);
-            return;
-        }
-
-        VolumeSlider.Value = ViewModel.Volume;
-        UpdateVideoBounds();
-
-        if (!string.IsNullOrWhiteSpace(App.StartupMediaPath))
-        {
-            // The command line switch means "play this", unlike picking a file in the UI.
-            await ViewModel.OpenAsync(App.StartupMediaPath, "cli");
-            await ViewModel.PlayAsync();
-        }
-    }
-
-    /// <summary>Destroys the player before the window (and its child HWND) goes away.</summary>
-    public void ShutdownPlayer() => ViewModel.Shutdown();
-
-    private void UpdateVideoBounds()
-    {
-        var rasterizationScale = XamlRoot?.RasterizationScale ?? 1.0;
-        var bounds = VideoArea
-            .TransformToVisual(null)
-            .TransformBounds(new Windows.Foundation.Rect(0, 0, VideoArea.ActualWidth, VideoArea.ActualHeight));
-
-        ViewModel.SetVideoBounds(
-            (int)Math.Round(bounds.X * rasterizationScale),
-            (int)Math.Round(bounds.Y * rasterizationScale),
-            (int)Math.Round(bounds.Width * rasterizationScale),
-            (int)Math.Round(bounds.Height * rasterizationScale));
-    }
-
-    private async void OnOpenClick(object sender, RoutedEventArgs e)
-    {
-        var picker = new FileOpenPicker();
-        WinRT.Interop.InitializeWithWindow.Initialize(picker, App.WindowHandle);
-        picker.FileTypeFilter.Add(".mp4");
-        picker.FileTypeFilter.Add(".mkv");
-        picker.FileTypeFilter.Add(".webm");
-        picker.FileTypeFilter.Add(".mp3");
-        picker.FileTypeFilter.Add(".flac");
-        picker.FileTypeFilter.Add(".wav");
-        picker.FileTypeFilter.Add(".m4a");
-        picker.FileTypeFilter.Add("*");
-
-        var file = await picker.PickSingleFileAsync();
-        if (file is not null)
-        {
-            await ViewModel.OpenAsync(file.Path, "picker");
+            // A silent, permanently-disconnected UI is worse than a visible error.
+            DiagnosticsLog.Write($"service connect failed: {ex}");
         }
     }
 
@@ -106,7 +56,7 @@ public sealed partial class MainPage : Page
             return;
         }
 
-        // Ignore sub-second drift caused by the player's periodic position updates.
+        // Ignore sub-second drift caused by periodic position snapshots.
         if (Math.Abs(e.NewValue - ViewModel.PositionSeconds) < 1.0)
         {
             return;

@@ -1,27 +1,30 @@
 using System.Globalization;
 using CommunityToolkit.Mvvm.ComponentModel;
+using DlnRenderer.Core.Ipc;
 using DlnRenderer.Core.Models;
-using DlnRenderer.Player.Mpv;
+using DlnRenderer.Services;
 using Microsoft.UI.Dispatching;
 
 namespace DlnRenderer.ViewModels;
 
 /// <summary>
-/// Drives the minimal player UI. Owns the libmpv session and projects its status onto bindable
-/// properties. Player commands run off the UI thread inside <see cref="MpvPlayer"/>; status
-/// events arrive on mpv's thread and are marshalled back through the captured dispatcher.
+/// Projects the renderer service state onto bindable properties. The UI owns no player: playback,
+/// DLNA discovery and video output all live in the service process, so closing the window does not
+/// interrupt playback.
 /// </summary>
-public sealed partial class MainPageViewModel : ObservableObject
+/// <remarks>
+/// Snapshots arrive on the pipe read thread and are marshalled through the captured dispatcher.
+/// Commands are fire-and-forget through <see cref="ServiceClient"/>; the resulting state comes back
+/// as a pushed snapshot, so the UI never guesses what happened.
+/// </remarks>
+public sealed class MainPageViewModel : ObservableObject, IAsyncDisposable
 {
     private readonly DispatcherQueue _dispatcher = DispatcherQueue.GetForCurrentThread();
+    private readonly ServiceClient _client = new();
 
-    private MpvPlayer? _player;
-    private MpvVideoSurface? _surface;
-    private PlaybackStatus _status = PlaybackStatus.Empty;
-    private bool _initialized;
-
+    private string _serviceText = "正在连接后台服务…";
     private string _statusText = "待机";
-    private string _detailText = "播放器未初始化";
+    private string _detailText = "等待 DLNA 控制端推送媒体";
     private string _titleText = "未加载媒体";
     private string _positionText = "00:00";
     private string _durationText = "00:00";
@@ -32,6 +35,15 @@ public sealed partial class MainPageViewModel : ObservableObject
     private string _errorText = string.Empty;
     private bool _hasMedia;
     private bool _isPlaying;
+    private bool _isConnected;
+
+    public MainPageViewModel()
+    {
+        _client.SnapshotChanged += OnSnapshotChanged;
+        _client.Faulted += OnClientFaulted;
+    }
+
+    public string ServiceText { get => _serviceText; private set => SetProperty(ref _serviceText, value); }
 
     public string StatusText { get => _statusText; private set => SetProperty(ref _statusText, value); }
 
@@ -57,227 +69,125 @@ public sealed partial class MainPageViewModel : ObservableObject
 
     public bool IsPlaying { get => _isPlaying; private set => SetProperty(ref _isPlaying, value); }
 
-    public MediaKind MediaKind => _status.MediaKind;
+    public bool IsConnected { get => _isConnected; private set => SetProperty(ref _isConnected, value); }
 
-    /// <summary>Creates the video surface and the mpv session. Must run on the UI thread.</summary>
-    public void Initialize(nint parentWindowHandle)
+    /// <summary>Connects to the service, starting it when it is not already running.</summary>
+    public async Task InitializeAsync()
     {
-        if (_initialized)
-        {
-            return;
-        }
-
-        _surface = MpvVideoSurface.Create(parentWindowHandle);
-        _player = new MpvPlayer(new MpvPlayerOptions
-        {
-            VideoWindowHandle = _surface.Handle,
-            HardwareDecoding = true,
-            PositionUpdateInterval = TimeSpan.FromMilliseconds(250),
-        });
-
-        _player.StatusChanged += OnStatusChanged;
-        _player.LogMessage += (_, message) => DiagnosticsLog.Write($"mpv[{message.Level}] {message.Text}");
-
-        DiagnosticsLog.Write($"surface created handle=0x{_surface.Handle.ToInt64():X}");
-        _initialized = true;
-        DetailText = "选择本地音频或视频文件开始播放";
-        DiagnosticsLog.Write("player initialized");
+        var connected = await _client.ConnectAsync(startIfMissing: true).ConfigureAwait(true);
+        ApplyConnection(connected);
     }
 
-    public async Task OpenAsync(string path, string source = "ui")
-    {
-        if (_player is null)
-        {
-            return;
-        }
+    public Task PlayAsync() => SendAsync(IpcCommands.Play);
 
-        try
+    public Task PauseAsync() => SendAsync(IpcCommands.Pause);
+
+    public Task StopAsync() => SendAsync(IpcCommands.Stop);
+
+    public Task SeekAsync(double seconds) => SendAsync(IpcCommands.Seek, seekSeconds: Math.Max(0, seconds));
+
+    public Task SetVolumeAsync(double volume) => SendAsync(IpcCommands.SetVolume, volume: (int)Math.Round(volume));
+
+    private async Task SendAsync(string command, double? seekSeconds = null, int? volume = null)
+    {
+        if (!IsConnected)
         {
-            var uri = new Uri(Path.GetFullPath(path));
-            var media = new MediaInfo(uri)
+            // Reconnect on demand: the service may have been restarted while the window was open.
+            await InitializeAsync().ConfigureAwait(true);
+            if (!IsConnected)
             {
-                Title = Path.GetFileNameWithoutExtension(path),
-            };
-
-            HasError = false;
-            ErrorText = string.Empty;
-            DiagnosticsLog.Write($"loadfile {uri.LocalPath} source={source}");
-
-            await _player.LoadAsync(media, CancellationToken.None);
+                return;
+            }
         }
-        catch (Exception ex)
-        {
-            ReportError($"无法加载媒体: {ex.Message}");
-        }
-    }
 
-    public async Task PlayAsync()
-    {
-        if (_player is null)
+        var snapshot = await _client.SendAsync(command, seekSeconds, volume).ConfigureAwait(true);
+        if (snapshot is null)
         {
+            ReportError("后台服务没有响应，请检查服务是否仍在运行。");
+            ApplyConnection(false);
             return;
         }
 
-        try
-        {
-            await _player.PlayAsync(CancellationToken.None);
-        }
-        catch (Exception ex)
-        {
-            ReportError($"播放失败: {ex.Message}");
-        }
+        ApplySnapshot(snapshot);
     }
 
-    public async Task PauseAsync()
+    private void OnSnapshotChanged(object? sender, RendererSnapshot snapshot)
     {
-        if (_player is null)
-        {
-            return;
-        }
-
-        try
-        {
-            await _player.PauseAsync(CancellationToken.None);
-        }
-        catch (Exception ex)
-        {
-            ReportError($"暂停失败: {ex.Message}");
-        }
+        // Raised on the pipe thread: never touch XAML from here.
+        _dispatcher.TryEnqueue(() => ApplySnapshot(snapshot));
     }
 
-    public async Task StopAsync()
+    private void OnClientFaulted(object? sender, string reason)
     {
-        if (_player is null)
+        _dispatcher.TryEnqueue(() =>
         {
-            return;
-        }
-
-        try
-        {
-            await _player.StopAsync(CancellationToken.None);
-        }
-        catch (Exception ex)
-        {
-            ReportError($"停止失败: {ex.Message}");
-        }
+            ApplyConnection(false);
+            ReportError(reason);
+        });
     }
 
-    public async Task SeekAsync(double seconds)
+    private void ApplyConnection(bool connected)
     {
-        if (_player is null)
-        {
-            return;
-        }
-
-        try
-        {
-            await _player.SeekAsync(TimeSpan.FromSeconds(seconds), CancellationToken.None);
-        }
-        catch (Exception ex)
-        {
-            ReportError($"跳转失败: {ex.Message}");
-        }
+        IsConnected = connected;
+        ServiceText = connected ? "后台服务：已连接" : "后台服务：未连接";
     }
 
-    public async Task SetVolumeAsync(double volume)
+    private void ApplySnapshot(RendererSnapshot snapshot)
     {
-        if (_player is null)
-        {
-            return;
-        }
+        IsConnected = true;
+        ServiceText = snapshot.DiscoveryActive
+            ? $"后台服务：已连接 · 局域网发现已开启（{snapshot.DeviceName ?? "DlnRenderer"}）"
+            : $"后台服务：已连接 · 发现未开启（{snapshot.DeviceName ?? "DlnRenderer"}）";
 
-        try
-        {
-            await _player.SetVolumeAsync((int)Math.Round(volume), CancellationToken.None);
-            Volume = volume;
-        }
-        catch (Exception ex)
-        {
-            ReportError($"音量设置失败: {ex.Message}");
-        }
-    }
-
-    /// <summary>Surfaces a player construction failure to the user instead of leaving a blank UI.</summary>
-    public void ReportInitializationFailure(string message) => ReportError($"播放器初始化失败: {message}");
-
-    /// <summary>Positions the native video window over the XAML placeholder. Coordinates are physical pixels.</summary>
-    public void SetVideoBounds(int x, int y, int width, int height)
-    {
-        _surface?.SetBounds(x, y, width, height);
-    }
-
-    /// <summary>
-    /// Tears down mpv and the native surface. Synchronous on purpose: it runs while the window is
-    /// closing, and the surface must be destroyed before its parent window is gone.
-    /// </summary>
-    public void Shutdown()
-    {
-        _player?.StatusChanged -= OnStatusChanged;
-        try
-        {
-            _player?.DisposeAsync().AsTask().GetAwaiter().GetResult();
-        }
-        catch (Exception ex)
-        {
-            DiagnosticsLog.Write($"player dispose failed: {ex}");
-        }
-        finally
-        {
-            _player = null;
-            _surface?.Dispose();
-            _surface = null;
-            _initialized = false;
-            DiagnosticsLog.Write("player disposed");
-        }
-    }
-
-    private void OnStatusChanged(object? sender, PlaybackStatus status)
-    {
-        // Raised on mpv's event thread: never touch UI state or XAML from here.
-        _dispatcher.TryEnqueue(() => ApplyStatus(status));
-    }
-
-    private void ApplyStatus(PlaybackStatus status)
-    {
-        _status = status;
-
+        var status = snapshot.Playback;
         HasMedia = status.Media is not null;
         IsPlaying = status.State == PlaybackState.Playing;
+
         StatusText = status.State switch
         {
-            PlaybackState.Stopped => "已停止",
             PlaybackState.Playing => "播放中",
             PlaybackState.Paused => "已暂停",
             PlaybackState.Buffering => "缓冲中",
             PlaybackState.Transitioning => "正在加载",
             PlaybackState.Error => "播放错误",
+            PlaybackState.Stopped => HasMedia ? "已停止" : "待机",
             _ => "待机",
         };
 
-        TitleText = status.Media?.Title ?? status.Media?.MediaUri.ToString() ?? "未加载媒体";
+        TitleText = status.Media?.Title
+            ?? status.Media?.MediaUri.ToString()
+            ?? "未加载媒体";
+
         DetailText = status.MediaKind switch
         {
-            MediaKind.Video => "视频",
+            MediaKind.Video => "视频 · 画面显示在渲染器窗口中",
             MediaKind.Audio => "音频",
-            _ => "选择本地音频或视频文件开始播放",
+            _ => snapshot.DiscoveryActive ? "等待 DLNA 控制端推送媒体" : "等待 DLNA 控制端推送媒体",
         };
 
         PositionText = Format(status.Position);
-        DurationText = status.Duration is { } d ? Format(d) : "00:00";
+        DurationText = status.Duration is { } duration ? Format(duration) : "00:00";
         PositionSeconds = status.Position.TotalSeconds;
         DurationSeconds = status.Duration?.TotalSeconds ?? 0;
         Volume = status.Volume;
 
-        HasError = status.State == PlaybackState.Error;
-        ErrorText = status.ErrorMessage ?? string.Empty;
+        if (status.State == PlaybackState.Error)
+        {
+            ReportError(status.ErrorMessage ?? "播放失败。");
+        }
+        else
+        {
+            HasError = false;
+            ErrorText = string.Empty;
+        }
 
-        // The native child window is only shown when the file really contains video.
-        var showVideo = status.MediaKind == MediaKind.Video;
-        _surface?.SetVisible(showVideo);
-        DiagnosticsLog.Write($"video surface visible={showVideo} surfaceNull={_surface is null}");
+        if (!string.IsNullOrWhiteSpace(snapshot.LastError))
+        {
+            ReportError(snapshot.LastError);
+        }
 
         DiagnosticsLog.Write(
-            $"status state={status.State} kind={status.MediaKind} pos={status.Position} dur={status.Duration} vol={status.Volume}");
+            $"snapshot state={status.State} kind={status.MediaKind} pos={status.Position} dur={status.Duration} discovery={snapshot.DiscoveryActive}");
     }
 
     private void ReportError(string message)
@@ -291,4 +201,6 @@ public sealed partial class MainPageViewModel : ObservableObject
         => value.TotalHours >= 1
             ? value.ToString(@"h\:mm\:ss", CultureInfo.InvariantCulture)
             : value.ToString(@"mm\:ss", CultureInfo.InvariantCulture);
+
+    public ValueTask DisposeAsync() => _client.DisposeAsync();
 }

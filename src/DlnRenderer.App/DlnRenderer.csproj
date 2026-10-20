@@ -46,7 +46,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\DlnRenderer.Core\DlnRenderer.Core.csproj" />
-    <ProjectReference Include="..\DlnRenderer.Player\DlnRenderer.Player.csproj" />
   </ItemGroup>
 
   <!--

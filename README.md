@@ -2,23 +2,26 @@
 
 面向 Windows 10/11 的开源 DLNA Media Renderer（媒体渲染器），使用 WinUI 3 构建原生界面。
 
-> 当前状态：**阶段 1.5 —— 本地播放引擎已可用**。
-> 可以从界面或命令行打开本地音视频并播放，**尚不能接收 DLNA 投屏**。
+> 当前状态：**阶段 3（DLNA MVP）已打通**。手机/电脑上的 DLNA 控制端可以发现本机、推送视频或音乐，
+> 播放、暂停、Seek、停止在真实链路上均已验证。
 > 因 libmpv 许可证尚未定案，**当前产物不可对外分发**（见下文“许可证”）。
 
 ## 已实现
 
-- WinUI 3（Windows App SDK 2.5.1 / .NET 10）原生窗口与播放页面
-- libmpv 播放引擎封装：打开本地文件、播放/暂停/停止、进度查询、Seek、音量、静音
-- 音频与视频区分（依据实际轨道列表，而非控制端声明）
-- 视频通过 Win32 子窗口渲染，支持窗口缩放
-- 播放状态统一由 `PlaybackStateMachine` 守卫，进度事件按 250 ms 节流
-- 关闭窗口时释放 native 资源；播放失败显示明确错误
-- 单元测试与原生集成测试（40 个）
+- WinUI 3（Windows App SDK 2.5.1 / .NET 10）原生窗口，界面显示服务连接状态与当前媒体
+- 独立的 Renderer 服务进程：`DlnRenderer.Service.exe`
+  - SSDP 发现（M-SEARCH 应答、`ssdp:alive` / `ssdp:byebye` 公告）
+  - 设备描述、AVTransport / ConnectionManager 的 SCPD
+  - SOAP 控制：`SetAVTransportURI`、`Play`、`Pause`、`Stop`、`Seek`、`GetTransportInfo`、`GetPositionInfo`、`GetMediaInfo`
+  - libmpv 播放引擎，视频在服务自己的原生窗口中渲染
+  - Named Pipes IPC（仅当前用户可访问），向 UI 推送状态、接收播放控制
+- 前端与后端分离：关闭 UI 不会停止播放或发现；重新打开 UI 会复用已有的服务进程
+- 单元测试与集成测试：163 个（Core 25、Player 15、Dlna 110、Service 13）
 
 ## 尚未实现
 
-DLNA 协议（SSDP/AVTransport/RenderingControl）、后台服务与 IPC、系统托盘、设置页、字幕/多音轨、安装包。
+RenderingControl（音量的 DLNA 侧）、GENA 事件订阅（`SUBSCRIBE` 目前返回 501）、
+字幕与多音轨选择、系统托盘、设置页、安装包。
 
 架构与决策记录见 [docs/architecture.md](docs/architecture.md)，
 开发步骤见 [docs/development.md](docs/development.md)，
@@ -54,10 +57,20 @@ dotnet test DlnRenderer.sln -c Debug
 
 ## 运行
 
+界面（会自动启动后台服务）：
+
 ```powershell
 winapp run src/DlnRenderer.App -c Debug
-winapp run src/DlnRenderer.App -c Debug -- --play "C:\path\video.mp4"
 ```
+
+只运行后台服务（无界面，仍可被 DLNA 控制端发现）：
+
+```powershell
+src\DlnRenderer.Service\bin\Debug\net10.0-windows\DlnRenderer.Service.exe
+```
+
+服务参数见 `DlnRenderer.Service.exe --help` 等价说明（`--http-port`、`--no-ssdp`、`--device-name`、
+`--listen-address`、`--log`、`--no-hwdec`）。
 
 清理开发包：
 
@@ -68,25 +81,18 @@ winapp unregister --manifest src/DlnRenderer.App/Package.appxmanifest
 ## 目录结构
 
 ```text
-src/DlnRenderer.App/        WinUI 3 UI、播放器视图模型
-src/DlnRenderer.Core/       领域模型、播放状态机、IMediaPlayer
-src/DlnRenderer.Player/     libmpv 互操作、状态映射、Win32 视频子窗口
-tests/DlnRenderer.Core.Tests/
-tests/DlnRenderer.Player.Tests/
-scripts/fetch-libmpv.ps1
+src/DlnRenderer.App/        WinUI 3 UI（只做状态展示与 IPC 控制）
+src/DlnRenderer.Core/       领域模型、播放状态机、IPC 契约
+src/DlnRenderer.Dlna/       SSDP、HTTP、SOAP、AVTransport、ConnectionManager、DIDL 解析
+src/DlnRenderer.Player/     libmpv 互操作与状态映射
+src/DlnRenderer.Service/    后台服务：播放会话、DLNA 宿主、IPC 服务端、视频窗口
+tests/                      Core / Player / Dlna / Service 测试
+tools/control-point/        真实协议验证脚本（SSDP 发现、SOAP 控制、媒体源、IPC）
 docs/
 ```
 
-`DlnRenderer.Dlna` / `DlnRenderer.Service` 将在有真实协议/IPC 实现时创建，而不是先建立空项目。
-
 ## 许可证
 
-项目整体许可证**尚未确定**。当前开发所用的 libmpv 二进制经实测为 **GPL-2.0-or-later** 构建，
-因此它只用于本地验证，不随源码或安装包分发，本版本也不得标记为可发布。
-
-可选的后续路线（详见 `docs/architecture.md` §10.1）：
-
-1. 改用 LGPL 构建（官方 `-lgpl` 产物或自行 `-Dgpl=false` 编译）；
-2. 明确接受 GPL-2.0-or-later，并准备完整的源码与通知文件。
-
-注意：NuGet 上有包声称 LGPL，但实测其 DLL 仍为 GPL 构建，不能依据包元数据判断。
+项目整体许可证尚未确定。当前使用的 libmpv Windows 二进制为 **GPL-2.0-or-later** 构建，
+仅存放于被忽略的本地目录、不随仓库或安装包分发。详见 [docs/architecture.md](docs/architecture.md) 与
+[docs/licenses.md](docs/licenses.md)。

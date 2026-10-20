@@ -42,34 +42,41 @@ dotnet build DlnRenderer.sln -c Debug
 dotnet test DlnRenderer.sln -c Debug
 ```
 
-预期结果（本轮实测）：构建 0 错误 / 0 警告，测试 40 通过 / 0 失败。
+预期结果（本轮实测）：构建 0 错误 / 0 警告，测试 **163 通过 / 0 失败**。
 
 测试分两类：
 
-- **纯单元测试**：状态机、状态映射、进度节流 —— 不需要 native DLL。
-- **原生集成测试**：真实启动 libmpv，使用 `ao=null` / `vo=null` 保证可重复；DLL 缺失时这些用例会
-  以明确的 `Skip` 信息跳过，而不是静默通过。
+- **纯单元测试**：状态机、状态映射、进度节流、SSDP/SOAP/DIDL 解析 —— 不需要 native DLL。
+- **原生/集成测试**：真实启动 libmpv（`ao=null` / `vo=null`）、真实 Named Pipe、回环 HTTP。
+  DLL 缺失时播放器用例会以明确的 `Skip` 信息跳过，而不是静默通过。
 
 ## 4. 运行
+
+界面（会自动启动后台服务）：
 
 ```powershell
 winapp run src/DlnRenderer.App -c Debug
 ```
 
-直接播放某个本地文件（用于验证）：
+只运行后台服务（无界面，DLNA 发现与播放照常工作）：
 
 ```powershell
-winapp run src/DlnRenderer.App -c Debug -- --play "C:\path\video.mp4"
+src\DlnRenderer.Service\bin\Debug\net10.0-windows\DlnRenderer.Service.exe --http-port 18090
 ```
+
+服务参数：`--http-port`、`--no-ssdp`、`--device-name`、`--listen-address`、`--log`、`--no-hwdec`、
+`--exit-after`。
 
 附加诊断日志（`--log` 仅在显式指定时写文件）：
 
 ```powershell
-winapp run src/DlnRenderer.App -c Debug -- --play "C:\path\video.mp4" --log "$env:TEMP\dln.log"
+winapp run src/DlnRenderer.App -c Debug -- --log "$env:TEMP\dln-ui.log"
 ```
 
-关闭：直接关闭窗口。窗口的 `AppWindow.Closing` 会同步释放 mpv 与原生子窗口；
-日志中应出现 `player disposed`。
+关闭界面只会关闭 UI：后台服务、播放与 DLNA 发现会继续运行（这是设计要求）。
+要停止服务，请在控制台按 `Ctrl+C`，或发送 IPC `Shutdown` 命令。
+
+> 服务重复启动时，第二个实例会因为无法占用同一 SSDP 端口 / 管道而明确失败，而不是静默并行运行。
 
 清理开发包：
 
@@ -129,11 +136,35 @@ winapp unregister --manifest src/DlnRenderer.App/Package.appxmanifest
 ## 8. 目录说明
 
 ```text
-src/DlnRenderer.App/         WinUI 3 UI + 播放器视图模型 + 诊断日志
-src/DlnRenderer.Core/        领域模型、播放状态机、IMediaPlayer
+src/DlnRenderer.App/         WinUI 3 UI（状态展示 + IPC 控制）+ 诊断日志
+src/DlnRenderer.Core/        领域模型、播放状态机、IMediaPlayer、IPC 契约
+src/DlnRenderer.Dlna/        SSDP、HTTP、SOAP、AVTransport、ConnectionManager、DIDL、UpnpTime
 src/DlnRenderer.Player/      libmpv 互操作、状态映射、Win32 视频子窗口
+src/DlnRenderer.Service/     后台服务：RendererSession、VideoPresenter、IpcServer、Program
 tests/DlnRenderer.Core.Tests/
-tests/DlnRenderer.Player.Tests/  含 13 KB 视频夹具 Media/sample-video.mp4
+tests/DlnRenderer.Player.Tests/    含 13 KB 视频夹具 Media/sample-video.mp4
+tests/DlnRenderer.Dlna.Tests/
+tests/DlnRenderer.Service.Tests/
+tools/control-point/         ssdp-discover / renderer-check / ipc-check / media-server / capture-window
 scripts/fetch-libmpv.ps1
 docs/
 ```
+
+## 9. 调试 DLNA 的实用命令
+
+```powershell
+# 发现
+pwsh tools/control-point/ssdp-discover.ps1 -SearchTarget "urn:schemas-upnp-org:device:MediaRenderer:1"
+
+# 完整 AVTransport 流程（需要媒体源）
+node tools/control-point/media-server.js "$env:TEMP\dln-media" 18777
+pwsh tools/control-point/renderer-check.ps1 -MediaUrl "http://<本机LAN地址>:18777/long.mp4"
+
+# IPC（与 UI 相同的管道）
+pwsh tools/control-point/ipc-check.ps1
+
+# 抓取服务视频窗口的内容（不受其他窗口遮挡影响）
+pwsh tools/control-point/capture-window.ps1 -Hwnd 0x<窗口句柄>
+```
+
+服务日志默认写入 `%LOCALAPPDATA%\DlnRenderer\logs\service-<日期>.log`。

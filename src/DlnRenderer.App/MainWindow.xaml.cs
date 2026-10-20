@@ -1,4 +1,3 @@
-using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 
 // To learn more about WinUI, the WinUI project structure,
@@ -11,6 +10,10 @@ namespace DlnRenderer;
 /// UI and logic to MainPage.xaml / MainPage.xaml.cs instead of here so you
 /// can use Page features such as navigation events and the Loaded lifecycle.
 /// </summary>
+/// <remarks>
+/// Closing this window closes only the UI. The renderer service keeps running, together with
+/// playback and DLNA discovery, by design; use the service's own shutdown path to stop it.
+/// </remarks>
 public sealed partial class MainWindow : Window
 {
     public MainWindow()
@@ -24,16 +27,5 @@ public sealed partial class MainWindow : Window
 
         // Navigate the root frame to the main page on startup.
         RootFrame.Navigate(typeof(MainPage));
-
-        // The native video window must be released before its parent HWND is destroyed.
-        AppWindow.Closing += OnAppWindowClosing;
-    }
-
-    private void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
-    {
-        if (RootFrame.Content is MainPage page)
-        {
-            page.ShutdownPlayer();
-        }
     }
 }

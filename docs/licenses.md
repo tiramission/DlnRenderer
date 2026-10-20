@@ -18,6 +18,17 @@
 | xunit.runner.visualstudio | 3.1.4 | Apache-2.0 | 测试适配器 | 测试项目 |
 | coverlet.collector | 6.0.4 | MIT | 覆盖率收集 | 测试项目 |
 
+阶段 3 新增的 `DlnRenderer.Dlna` 与 `DlnRenderer.Service` **没有引入任何第三方 NuGet 依赖**：
+SSDP 用 `System.Net.Sockets`，HTTP 用 `TcpListener`，SOAP/DIDL 用 `System.Xml.Linq`，
+IPC 用 `System.IO.Pipes`。因此没有新增许可证义务。
+
+开发用工具（不随产品分发）：
+
+| 组件 | 版本 | 许可证 | 用途 |
+| --- | --- | --- | --- |
+| Node.js | 24.22.0 | MIT | `tools/control-point/media-server.js` 媒体源与验证脚本 |
+| FFmpeg（`ffmpeg`/`ffprobe`） | 9.0.2 | LGPL/GPL（取决于构建） | 仅用于生成测试媒体，不入库、不分发 |
+
 ## 2. 原生依赖
 
 | 组件 | 版本 / 标识 | 许可证 | 分发状态 |
