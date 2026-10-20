@@ -105,7 +105,28 @@ winapp unregister --manifest src/DlnRenderer.App/Package.appxmanifest
 | 视频区域黑屏/被遮住 | 原生子窗口被 WinUI 内容桥接窗口覆盖；检查 `MpvVideoSurface` 的置顶调用 |
 | 播放时没有声音 | 确认系统输出设备；`wasapi` 会话存在但无声属环境问题，不是播放器错误 |
 
-## 7. 目录说明
+## 7. 版本控制
+
+仓库根目录即 `.git` 所在目录，默认分支 `main`。首次基线提交为
+`chore: initialize DlnRenderer project baseline`（提交哈希见 `git log -1`）。
+
+被忽略、**不入库**的内容：
+
+- 所有 `bin/`、`obj/`、`.vs/`、测试结果与日志/转储。
+- `src/DlnRenderer.Player/native/`：包含 `libmpv-2.dll`（GPL 构建）与 provenance 文件。
+  需用 `scripts/fetch-libmpv.ps1` 在本地获取。
+- 本地媒体文件（mp4/mkv/webm/mp3/flac/wav 等），用于手工播放验证。
+- 机器特定的本地配置（`*.local.json`、`*.secrets.json`、`.env`）。
+
+明确**入库**的例外：
+
+- `tests/DlnRenderer.Player.Tests/Media/sample-video.mp4`（2 秒、约 13 KB 的测试夹具）。
+- `src/DlnRenderer.App/packages.lock.json`（App 的依赖锁文件）。
+- `src/DlnRenderer.App/Properties/PublishProfiles/*.pubxml`（仅描述目标 RID，无凭据）。
+
+本轮未配置远程仓库，也未推送。
+
+## 8. 目录说明
 
 ```text
 src/DlnRenderer.App/         WinUI 3 UI + 播放器视图模型 + 诊断日志
