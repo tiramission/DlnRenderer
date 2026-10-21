@@ -501,8 +501,10 @@ BubbleUPnP 的设备列表为空，视频 App 的「投屏」列表里也没有 
 
 3. **`GetProtocolInfo` 只返回通配符 `http-get:*:*:*`**
    多数控制端在投屏前用该动作协商格式，通配符会被判为「不接受任何格式」，导致
-   **设备可见但无法投送**。现采用 MiniCast 的 392 条格式声明（含 DLNA.ORG_PN），
-   作为嵌入资源随程序分发。
+   **设备可见但无法投送**。现采用格式声明清单（含 DLNA.ORG_PN），作为嵌入资源随程序分发。
+   阶段 D 用自生成样片实测 libmpv 后，把清单从 392 条收紧到 277 条：移除了没有解码器的
+   格式（RealMedia、MIDI、ATRAC3、QCELP）、DRM profile、占位值和无法显示的静态图片，
+   并修正了把音频声明成 `video/*` 的错误条目。依据见 `docs/media-matrix.md`。
 
 4. **SSDP 绑定到了每个网卡的精确地址**
    原实现为每块网卡各绑一个 `地址:1900`。Windows 对同一精确地址分桶，
@@ -705,3 +707,41 @@ SCPD 中只有 `LastChange` 标记 `sendEvents="yes"`，其余变量保持 `no`�
 - **日志无轮换**：`ServiceLog` 没有保留策略，长时间常驻会无限增长。
 - **无系统托盘**：关闭主窗口即退出 UI；后台服务继续运行但没有入口重新打开或退出整个应用。
 - **设置不持久化**：设备名、端口等只能通过命令行参数指定，重启后回到默认值。
+---
+
+## 15. 媒体能力边界（阶段 D）
+
+协议层原来照抄 392 条 `SinkProtocolInfo`，等于向控制端承诺「这些都能投」。阶段 D 用
+ffmpeg 自生成样片逐个实测 libmpv，把承诺改成了事实。
+
+### 15.1 测量方式
+
+- 样片：`tools/media-compat/make-fixtures.ps1` 生成 22 个（含 2 个负样本），不入库。
+- 播放：`MediaCompatibilityTests` 通过 libmpv 真实加载、播放并观察位置推进；
+  `invalid-*` / `unsupported-*` 必须失败，其余必须播放——失败即测试红，不会静默写进文档。
+- 渲染：`tools/media-compat/measure-media.ps1` 跑测试并生成 `docs/media-matrix.md`。
+
+### 15.2 声明的收缩（392 → 277）
+
+| 移除类别 | 依据 |
+| --- | --- |
+| 无解码器格式（RealMedia、MIDI、ATRAC3、QCELP） | MIDI 用手工 SMF 实测 `unrecognized file format`；其余 libavcodec 无解码器 |
+| DRM profile（`WMDRM_*`） | 渲染器没有解密能力，声明即虚假承诺 |
+| 占位值（`video/unknown` 等） | 从别的设备抄来的条目 |
+| 静态图片（`image/*` 60 余条） | 无幻灯片功能，mpv 显示一帧即结束，看起来像投屏失败 |
+| 音频写成 `video/*`（`video/mp3` 等） | 声明本身错误，控制端会按错误 MIME 投送 |
+
+`SinkProtocolInfoTests` 把这些类别钉住：下次从别的设备抄清单时，回流会让测试失败。
+
+### 15.3 硬件解码
+
+`MpvPlayer.CurrentHardwareDecodingMethod` 读 mpv 的 `hwdec-current`，反映**实际**解码方式：
+H.264/VP9/HEVC 10bit/AV1 → `d3d11va-copy`，VP8 → `nvdec-copy`，MPEG-2/MPEG-4 → 软件。
+显式请求不存在的 `vaapi` 时 mpv 自动回退软解并正常播放，不会让文件失败。
+
+### 15.4 字幕与多音轨（D4/D5，决定延后）
+
+样片 `video-h264-dualaudio-subrip.mkv`（双音轨 + 内嵌字幕）可播，说明引擎侧无障碍；
+但主流控制端只投单个媒体 URI，不会提供字幕 URI，AVTransport 1.0 也没有音轨选择动作。
+在没有控制端会发这些请求的前提下实现接口只会得到死代码，因此延后，
+重新评估条件记录在 `ROADMAP.md` 阶段 D。

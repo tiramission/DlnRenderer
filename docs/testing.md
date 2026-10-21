@@ -160,7 +160,7 @@ pwsh tools/control-point/ipc-check.ps1
 | 初始版本 | 找不到 | 找不到 | 服务只应答设备级 ST，客户端取描述后不再请求 SCPD |
 | 补 `X_DLNADOC`/`URLBase`/相对 URL | 找不到 | 找不到 | 客户端仍只取描述 |
 | 补服务级 ST 应答 | **能找到** | 找不到 | BubbleUPnP 搜 `service:AVTransport:1`，此前被判定「not answered」 |
-| 换成 MiniCast 的 392 条协议清单 | 能找到 | 找不到 | 解决「可见但不可投送」 |
+| 换成 MiniCast 的格式协议清单 | 能找到 | 找不到 | 解决「可见但不可投送」（阶段 D 后按实测收紧为 277 条） |
 | **描述改用默认命名空间（去掉 `d:` 前缀）** | **能找到** | **能找到并投屏** | 投屏链路 `SetAVTransportURI → 加载 → Play` 全部出现在日志中 |
 
 ### 3.4 投屏链路日志（实测节选）
@@ -480,3 +480,44 @@ winapp ui click <图标 slug> -a explorer --right    # 右键菜单
 - **UI 侧播放联动**：进度/暂停/Seek 在真实投送时的界面反馈未在本轮重测（阶段 B 已验证服务端链路）。
 - **MSIX 下的托盘与开机启动差异**：按 ROADMAP 风险项，留到阶段 E 打包时验证。
 - 托盘图标位于隐藏图标区（任务栏策略未改），“可见性”只验证到 UIA 能读到。
+## 9. 阶段 D：媒体兼容性实测（2026-10-21）
+
+### 9.1 做法
+
+协议层原来照抄 392 条格式声明，本阶段用**真实播放**替代声明：ffmpeg 自生成样片
+（无版权、单个 < 300 KB、不入库），由 libmpv 逐个加载、播放并观察位置推进。
+
+```powershell
+pwsh tools/media-compat/make-fixtures.ps1     # 生成样片到 artifacts/media-fixtures
+pwsh tools/media-compat/measure-media.ps1     # 跑测量并生成 docs/media-matrix.md
+```
+
+`measure-media.ps1` 先跑 `MediaCompatibilityTests`，任何样片结果与文件名承诺不符就整体失败、
+不写文档——所以「矩阵里有一行」等价于「这条断言这次真的过了」，不是抄来的结论。
+
+文件名即契约：`invalid-*`（不是媒体）与 `unsupported-*`（有封装无解码器）必须失败，
+其余必须播放。两个方向都断言，防止「删错声明」和「悄悄坏掉」两种情况。
+
+### 9.2 实测结果
+
+| 项 | 结果 |
+| --- | --- |
+| 样片 | 22 个（20 可播 / 2 正确失败：`invalid-not-media.mp4`、`unsupported-midi.mid`） |
+| 视频容器 | mp4、mkv、mov、flv、avi、ts、webm、swf 全部可播 |
+| 编码 | H.264、HEVC 10bit、MPEG-4、MPEG-2、VP8、VP9、AV1 全部可播 |
+| 音频 | aac、ac3、flac、mp3、opus、pcm、vorbis 全部可播 |
+| 硬解 | H.264/VP9/HEVC10/AV1 → `d3d11va`，VP8 → `nvdec`，MPEG-2/MPEG-4 → 软件 |
+| 硬解回退 | 显式请求不存在的 `vaapi` → 回退软解，播放正常（D3） |
+
+完整矩阵（含 ffmpeg/libmpv 版本、每个样片的实际解码方式）见 `docs/media-matrix.md`。
+
+### 9.3 声明的收缩（D2，392 → 277）
+
+移除类别与依据见 `docs/architecture.md` §15.2；`SinkProtocolInfoTests` 把
+「不得声明图片 / DRM / MIDI / RealMedia / 音频冒充 video/*」钉成断言。
+
+### 9.4 未覆盖
+
+- 只测 2.5 秒自生成样片：验证「能解码、能推进」，不覆盖长片、码率上限、seek 精度。
+- 只在本机（x64 + D3D11 显卡）测过；无硬解的机器走软解，格式集合一致但 CPU 占用不同。
+- 没有真实第三方控制端投送 MKV/HEVC 的回归记录（阶段 B 只覆盖了常见 mp4）。

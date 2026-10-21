@@ -114,6 +114,24 @@ public sealed class MpvPlayer : IMediaPlayer
 
     public event EventHandler<PlaybackStatus>? StatusChanged;
 
+    /// <summary>
+    /// Hardware decoding method mpv actually chose for the current file, or null when it has not
+    /// chosen one (no file loaded, or it fell back to software decoding).
+    /// </summary>
+    /// <remarks>
+    /// Reads mpv's <c>hwdec-current</c> property: "what is in use right now", not "what was asked
+    /// for". Stage D uses it as evidence that hardware decoding really happened, and that a request
+    /// for a method the machine lacks ends up as software decoding rather than a failed file.
+    /// </remarks>
+    public string? CurrentHardwareDecodingMethod
+    {
+        get
+        {
+            var value = MpvNative.GetString(RequireContext(), "hwdec-current");
+            return string.IsNullOrWhiteSpace(value) || value == "no" ? null : value;
+        }
+    }
+
     /// <summary>Forwarded mpv log messages at or above the configured level.</summary>
     public event EventHandler<MpvLogMessage>? LogMessage;
 
@@ -370,7 +388,11 @@ public sealed class MpvPlayer : IMediaPlayer
         SetOption(context, "keepaspect", "yes");
         SetOption(context, "keepaspect-window", "yes");
 
-        SetOption(context, "hwdec", options.HardwareDecoding ? "auto-safe" : "no");
+        SetOption(
+            context,
+            "hwdec",
+            options.HardwareDecodingMethod
+                ?? (options.HardwareDecoding ? "auto-safe" : "no"));
 
         if (!string.IsNullOrEmpty(options.AudioOutput))
         {

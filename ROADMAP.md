@@ -45,7 +45,7 @@ DlnRenderer 是一个 **DLNA Media Renderer（DMR）**：它让手机、平板�
 | SSDP 发现（M-SEARCH 应答、alive/byebye 公告） | 已实现且已验证 | `SsdpServer.cs`；真实手机曾发现设备（`docs/testing.md` §3） |
 | 设备描述、SCPD | 已实现且已验证 | `DeviceDescription.cs`；`DeviceDescriptionDiscoveryTests` |
 | AVTransport 11 个动作 | 已实现且已验证 | `AvTransportService.cs`；`AvTransportServiceTests` |
-| ConnectionManager `GetProtocolInfo`（392 条格式） | 已实现且已验证 | `SinkProtocolInfo.csv`；`ConnectionManagerProtocolInfoTests` |
+| ConnectionManager `GetProtocolInfo`（277 条格式） | 已实现且已验证（阶段 D 按实测收紧） | `SinkProtocolInfo.csv`；`ConnectionManagerProtocolInfoTests`；`SinkProtocolInfoTests` |
 | RenderingControl 音量/静音 | 已实现但未充分验证 | `RenderingControlService.cs`；单元测试 + 真实 libmpv 集成测试，**无真实控制端验证** |
 | GENA 订阅与 LastChange 事件 | 已实现但未充分验证 | `Gena/` 7 个文件；23 个协议测试 + 22/22 端到端（本机回调），**无真实控制端验证** |
 | libmpv 播放（视频/音频、硬件解码） | 已实现且已验证 | `MpvPlayer.cs`；`MpvPlayerIntegrationTests` |
@@ -118,7 +118,7 @@ DlnRenderer 是一个 **DLNA Media Renderer（DMR）**：它让手机、平板�
 | 设备描述 / SCPD | 已实现且已验证 | 默认命名空间、相对 URL、`X_DLNADOC` |
 | AVTransport 核心动作 | 已实现且已验证 | 11 个动作，含 `GetCurrentTransportActions` |
 | `SetNextAVTransportURI` / `Next` / `Previous` | 未实现 | 无播放队列设计；`NextURI` 恒为空字符串（诚实声明） |
-| ConnectionManager | 已实现且已验证 | Sink 392 条格式 |
+| ConnectionManager | 已实现且已验证 | Sink 277 条格式（阶段 D 实测后从 392 条收紧） |
 | RenderingControl | 已实现但未充分验证 | 6 个动作；`GetVolumeDB` 系列未实现且未声明 |
 | GENA 订阅/续订/取消 | 已实现但未充分验证 | 完整状态码语义；无真实客户端验收 |
 | GENA 事件内容 | 已实现但未充分验证 | `LastChange` + 转义内层 XML |
@@ -140,7 +140,7 @@ DlnRenderer 是一个 **DLNA Media Renderer（DMR）**：它让手机、平板�
 | --- | --- | --- |
 | 视频播放 / 硬件解码 | 已实现且已验证 | `hwdec=auto-safe`，d3d11va 实测生效 |
 | 音频播放 | 已实现且已验证 | `ao=wasapi` 实测 |
-| 媒体格式覆盖 | 已实现但未充分验证 | 协议层声明 392 种，实际解码仅测过 MP4/WAV |
+| 媒体格式覆盖 | 已实现且已实测 | 协议层声明 277 种，阶段 D 用 22 个自生成样片实测（`docs/media-matrix.md`） |
 | HTTP 串流（含 Range） | 已实现且已验证 | 真实手机推流成功 |
 | 字幕 | 未实现 | 无 `sub-add`/`sub-files` 调用 |
 | 多音轨选择 | 未实现 | 无 `aid` 选择接口 |
@@ -454,8 +454,38 @@ C3 的设置项数量要克制——只做真正有默认值争议的项。
 
 **目标**：明确"支持什么、不支持什么"，并让真实媒体库的播放不出意外。
 
-**为什么现在做**：协议声明了 392 种格式，但实际只测过 MP4/WAV。这个差距会在用户第一次
-播放 MKV/HEVC/带有独立字幕的文件时暴露。本阶段先做**诚实的能力测量**，再按需补功能。
+**为什么现在做**：协议层原来照抄了 392 条格式声明，但实际只测过 MP4/WAV。这个差距会在用户第一次
+播放 MKV/HEVC/带有内嵌字幕的文件时暴露。本阶段先做**诚实的能力测量**，再按需补功能。
+
+**已完成（2026-10-21）**
+
+| # | 任务 | 结论 | 证据 |
+| --- | --- | --- | --- |
+| D1 | 媒体兼容性矩阵 | **完成** | 22 个 ffmpeg 自生成样片（含 2 个负样本）经 libmpv 真实播放：20 可播 / 2 正确失败。`docs/media-matrix.md` 由 `tools/media-compat/measure-media.ps1` 生成，`MediaCompatibilityTests` 每样片断言，任何格式劣化都会让测试失败而不是静默写进文档 |
+| D2 | 收紧 `SinkProtocolInfo` | **完成** | 392 → 277 条。移除：无解码器格式（RealMedia/MIDI/ATRAC3/QCELP，MIDI 用手工 SMF 实测为 `unrecognized file format`）、DRM profile、占位值、静态图片（无幻灯片功能，投了也像失败）、以及把音频写成 `video/*` 的错误条目。`SinkProtocolInfoTests` 把这些类别钉住，防止下次从别的设备抄清单时回流 |
+| D3 | 硬解失败回退 | **完成** | 实测 `hwdec-current`：H.264/VP9/HEVC10/AV1 走 `d3d11va-copy`，VP8 走 `nvdec-copy`，MPEG-2/MPEG-4 走软件；显式请求不存在的 `vaapi` 时 mpv 回退软解并正常播放（`CurrentHardwareDecodingMethod` 为 null） |
+| D4 | 字幕 | **延后**（决定见下） | — |
+| D5 | 多音轨 | **延后**（决定见下） | — |
+
+**D4/D5 的决定：延后，理由记录在此**
+
+样片 `video-h264-dualaudio-subrip.mkv`（双音轨 + 内嵌 SRT）可以正常播放，说明**引擎侧没有障碍**。
+但延后的依据是协议侧：
+
+- DLNA 的字幕/音轨选择依赖控制端主动提供信息。内嵌字幕由容器承载，控制端只能在 DIDL-Lite 的
+  `res` 之外额外给出字幕资源 URI；主流 Android 控制端（BubbleUPnP、各视频 App 内置投屏）
+  基本只投一个媒体 URI，不会提供字幕 URI，也不会调用音轨选择动作。
+- AVTransport 1.0 没有标准音轨选择动作，`SelectAudioTrack` 不是协议动作；要做只能在 DIDL-Lite
+  元数据或私有扩展上约定，等于自定义协议，真实控制端不会配合。
+- 在没有任何控制端会发这些请求的情况下实现接口，只会得到「实现了但永远不被调用」的代码，
+  以及为它维护的 IPC/状态字段。这违反 AGENTS.md「不允许静默成功/虚假能力」的精神。
+
+**重新评估的触发条件**（写在这里，避免以后遗忘）：
+
+1. 有真实控制端被观测到发送字幕资源 URI（DIDL-Lite 中带第二个 `res`/`sec:captionInfo`），或
+2. 用户报告某控制端投 MKV 后看不到字幕/选不了音轨。
+
+届时先补一个「控制端真的会发什么」的抓包记录，再实现 D4/D5。
 
 **当前问题与位置**
 
@@ -481,16 +511,17 @@ D4/D5 的前提是控制端真的会提供这些信息——若 D1 数据显示�
 
 **前置依赖**：阶段 B（确认现有链路稳定后再扩展）。
 
-**验收标准**
+**D1–D3 验收情况（2026-10-21）**
 
-- `docs/media-matrix.md` 每个格式有明确的"可播/不可播/需转码"结论与证据。
-- 声明格式中不存在已知不可播的条目。
-- 硬解不可用时，10 bit HEVC 等典型文件仍能软解播放。
+- [x] `docs/media-matrix.md` 每个格式有明确的"可播/不可播"结论与证据（含 2 个负样本）。
+- [x] 声明格式中不存在已知不可播的条目：392 → 277，`SinkProtocolInfoTests` 断言无图片/无 DRM/无 MIDI 等。
+- [x] 硬解不可用时仍能软解播放：`hwdec-vaapi-fallback` 实测。
+- [x] D4/D5 已决定延后，理由与重新评估条件记录在上文。
 
 **测试要求**：自动化为每个样片一条集成测试（需要 libmpv，缺失时跳过）；
 人工为真实文件播放确认。
 
-**DoD**：D1–D3 完成；D4/D5 按 D1 结论决定是否进入本阶段。
+**DoD**：D1–D3 完成；D4/D5 已按 D1 结论决定延后（见上）。
 
 **风险与应对**：样片版权与体积 → 只用公开测试片段或自生成文件，不提交大文件到仓库。
 

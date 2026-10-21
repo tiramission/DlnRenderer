@@ -31,7 +31,7 @@
 | SSDP | M-SEARCH 应答（6 个目标全应答）、`ssdp:alive` / `ssdp:byebye` 公告 |
 | 设备描述 / SCPD | 默认命名空间、相对服务 URL、`dlna:X_DLNADOC` |
 | AVTransport | `SetAVTransportURI`、`Play`、`Pause`、`Stop`、`Seek`、`GetTransportInfo`、`GetPositionInfo`、`GetMediaInfo`、`GetDeviceCapabilities`、`GetTransportSettings`、`GetCurrentTransportActions` |
-| ConnectionManager | `GetProtocolInfo`（392 条格式声明）、`GetCurrentConnectionIDs`、`GetCurrentConnectionInfo` |
+| ConnectionManager | `GetProtocolInfo`（277 条格式声明，阶段 D 按 libmpv 实测收紧，见 [docs/media-matrix.md](docs/media-matrix.md)）、`GetCurrentConnectionIDs`、`GetCurrentConnectionInfo` |
 | RenderingControl | `GetVolume`、`SetVolume`、`GetMute`、`SetMute`、`ListPresets`、`SelectPreset` |
 | GENA | `SUBSCRIBE` / 续订 / `UNSUBSCRIBE`，`LastChange` 事件（AVTransport 与 RenderingControl） |
 
