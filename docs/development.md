@@ -42,7 +42,7 @@ dotnet build DlnRenderer.sln -c Debug
 dotnet test DlnRenderer.sln -c Debug
 ```
 
-预期结果（本轮实测）：构建 0 警告 / 0 错误，测试 **351 通过 / 0 失败**（Core 25、Player 20、Dlna 207、Service 99）。
+预期结果（本轮实测）：构建 0 警告 / 0 错误，测试 **391 通过 / 0 失败**（Core 43、Player 20、Dlna 218、Service 110）。
 
 测试分两类：
 
@@ -67,6 +67,26 @@ src\DlnRenderer.Service\bin\Debug\net10.0-windows\DlnRenderer.Service.exe --http
 服务参数：`--http-port`、`--no-ssdp`、`--device-name`、`--listen-address`、`--log`、`--no-hwdec`、
 `--exit-after`。
 
+服务启动时先读 `%LOCALAPPDATA%\DlnRenderer\settings.json`（设置页写入），命令行参数优先于文件设置。
+
+### 4.1 UI 自动化验收（`winapp ui`）
+
+窗口改动不用靠肉眼：`winapp ui` 用 UI Automation 读取与操作控件，与屏幕阅读器同一通道。
+
+```powershell
+winapp run src/DlnRenderer.App -c Debug -- --log "$env:TEMP\dln-ui.log"   # 另开一个终端窗口
+
+winapp ui inspect -a <PID> --depth 8 -i      # 交互元素树（含控件名称、位置）
+winapp ui search "后台服务" -a <PID>          # 按文本找元素
+winapp ui set-value DeviceNameBox "名字" -a <PID>
+winapp ui invoke <按钮 slug> -a <PID>
+winapp ui screenshot -a <PID> --json         # 窗口截图
+winapp ui invoke "显示隐藏的图标" -a explorer  # 托盘图标在隐藏图标区
+winapp ui search "DlnRenderer" -a explorer
+```
+
+具体验收项与实测结果见 [`testing.md`](testing.md) §8。
+
 附加诊断日志（`--log` 仅在显式指定时写文件）：
 
 ```powershell
@@ -74,7 +94,8 @@ winapp run src/DlnRenderer.App -c Debug -- --log "$env:TEMP\dln-ui.log"
 ```
 
 关闭界面只会关闭 UI：后台服务、播放与 DLNA 发现会继续运行（这是设计要求）。
-要停止服务，请在控制台按 `Ctrl+C`，或发送 IPC `Shutdown` 命令。
+要停止整个应用，请在设置页点“退出整个应用”或在托盘菜单选“退出应用”（都会通过 IPC `Shutdown`
+停掉服务）；单独杀掉服务进程时，在控制台按 `Ctrl+C` 即可。
 
 > 服务重复启动时，第二个实例会因为无法占用同一 SSDP 端口 / 管道而明确失败，而不是静默并行运行。
 

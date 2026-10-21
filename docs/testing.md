@@ -10,18 +10,19 @@ dotnet build DlnRenderer.sln -c Debug
 dotnet test DlnRenderer.sln -c Debug
 ```
 
-实测结果：**369 通过 / 0 失败，0 跳过**（Core 25、Player 20、Dlna 218、Service 106）。
+实测结果：**391 通过 / 0 失败，0 跳过**（Core 43、Player 20、Dlna 218、Service 110）。
 
 连续 3 次完整运行均为 0 失败（`dotnet test DlnRenderer.sln -c Debug --no-build`）。
 
-### 1.1 Core（25）
+### 1.1 Core（43）
 
 | 组 | 覆盖内容 |
 | --- | --- |
 | `PlaybackStateMachineTests` | 合法/非法转换、幂等重复状态、事件载荷、未定义枚举值拒绝 |
 | `PlaybackStatusTests` | 默认值、`with` 不可变性、`MediaInfo` 必需 URI |
+| `SettingsStoreTests`（18，阶段 C） | 缺文件给默认值、读写往返、JSON 键名可读、损坏/错形/未知字段容错、非法设备名不落盘、长度上下界、原子写入（临时文件不残留）、覆盖写 |
 
-### 1.2 Player（15）
+### 1.2 Player（20）
 
 纯逻辑（不加载 native DLL）：
 
@@ -53,9 +54,12 @@ dotnet test DlnRenderer.sln -c Debug
 | `DidlLiteParserTests` | 字段提取、损坏/空/XXE 输入容错 |
 | `DlnaDeviceHostTests` | 回环上的真实 HTTP：描述/SCPD、SOAP 控制、Fault（含 `utf-8` 声明）、405/404/501、端口释放与冲突、重复启动 |
 
-### 1.4 Service（106）
+### 1.4 Service（110）
 
 本节只展开 IPC；窗口、GENA 与 RenderingControl 的服务层测试见 §4.1、§5.1。
+
+`ServiceStartupOptionsTests` 覆盖命令行解析与阶段 C 新增的设置优先级：
+`ApplySettings` 只补未显式给出的值，`--device-name` / `--no-hwdec` 等命令行始终优先于文件设置。
 
 `IpcServerTests` 通过真实 Named Pipe 验证：
 
@@ -411,3 +415,68 @@ pwsh tools/control-point/stage-b-report.ps1 -OutputPath docs/stage-b-evidence.md
 | 4 | 本次没有音乐投送记录 | 唯一 `player loading` 为 videoItem | 需要再测一次音乐 |
 
 以上四项只记录，不在本轮修改；修复后必须用真实客户端重新生成证据表。
+
+## 8. 阶段 C：设置、托盘与主界面（真实窗口验收）
+
+### 8.1 验收方式
+
+不靠“代码写了就算”：应用由 `winapp run` 以真实窗口启动，再用 `winapp ui`（UI Automation，
+即屏幕阅读器同款读取方式）逐项操作和读取控件，证据同时取自 UI 与服务日志。
+
+```powershell
+# 1) 启动（会自动构建）；--log 是 UI 侧诊断日志
+winapp run src/DlnRenderer.App -c Debug -- --log "$env:TEMP\dln-ui.log"
+
+# 2) 逐项验证（-a 传进程 PID 或进程名）
+winapp ui invoke "设置" -a <app>
+winapp ui set-value DeviceNameBox "DlnRenderer-Test" -a <app>
+winapp ui search "保存" -a <app>
+winapp ui invoke <保存按钮 slug> -a <app>
+
+# 3) 托盘验证：先展开隐藏图标区，再定位图标
+winapp ui invoke "显示隐藏的图标" -a explorer
+winapp ui search "DlnRenderer" -a explorer
+winapp ui click <图标 slug> -a explorer --double   # 双击恢复窗口
+winapp ui click <图标 slug> -a explorer --right    # 右键菜单
+```
+
+服务日志：`%LOCALAPPDATA%\DlnRenderer\logs\service-yyyyMMdd.log`。
+设置文件：`%LOCALAPPDATA%\DlnRenderer\settings.json`。
+窗口截图（本地产物，`artifacts/` 在 `.gitignore` 中）：`artifacts/stage-c/*.png`。
+
+### 8.2 实测结果（2026-10-21）
+
+| 检查 | 结果 | 证据 |
+| --- | --- | --- |
+| 启动不崩、窗口可见 | 通过 | `winapp run` 报 PID；主窗口标题 `DlnRenderer`，响应正常 |
+| 主界面显示服务状态 | 通过 | UIA 读到 `后台服务：已连接 · 局域网发现已开启（DlnRenderer-Test）` |
+| 设置改名并保存 | 通过 | `settings.json` 写入 `deviceName: "DlnRenderer-Test"` |
+| 重启服务后新名生效 | 通过 | 服务日志 `settings: device name 'DlnRenderer-Test', hwdec=True`；新进程 PID |
+| 服务读设置、命令行优先 | 通过 | C5 端到端脚本 + §1.4 的 `ApplySettings` 优先级测试 |
+| 关闭窗口到托盘 | 通过 | 点关闭后：窗口隐藏、UI 进程仍在、服务进程仍在 |
+| 托盘图标存在 | 通过 | UIA 找到 `Button "DlnRenderer — 待机"`（位于隐藏图标区） |
+| 双击托盘恢复窗口 | 通过 | 窗口重新可见，状态仍为已连接 |
+| 托盘右键菜单 | 通过 | 菜单项：`打开主窗口` / `DlnRenderer — 待机`（灰显状态行）/ `退出应用` |
+| 退出整个应用 | 通过 | 点设置页“退出整个应用”后，服务日志出现 `shutdown requested over ipc` → `service stopped`，两个进程都退出 |
+| 音量初始值与真实状态一致 | 通过 | 快照 volume=100，音量滑块停在最右（此前停在 0，见 8.3） |
+| 控件无障碍名称 | 通过 | UIA 读到 `播放` / `暂停` / `停止` / `静音` / `播放进度` / `音量` |
+| 空闲连接保活 | 通过 | 连接保持 > 70 秒仍在（此前 30 秒被服务端丢弃，见 8.3） |
+
+### 8.3 本轮复现并修复的缺陷
+
+| 缺陷 | 现象 | 修复 |
+| --- | --- | --- |
+| IPC 空闲连接被服务端丢弃 | UI 显示“后台服务已断开连接”，服务日志 `ipc client read timed out` | 客户端每 10 秒发 `GetStatus` 保活（低于服务端 30 s 看门狗）；主界面断线后每 5 秒重连；`ConnectAsync` 加锁防重复建连 |
+| 音量滑块初始值不反映真实音量 | 首个快照 volume=100 与视图模型默认值相同 → 无属性变更 → 滑块停在 0 | 加载完成后显式同步控件值 |
+| 时长到达后进度条上限不更新 | `DurationSeconds` 变更只同步了音量滑块 | 位置与时长变更都触发进度条同步 |
+| 设备名可能不保存 | `x:Bind` TwoWay 只在失焦时提交，点“保存”提交时读到旧值 | 保存前从 TextBox 显式取值 |
+| 控件缺少无障碍名称 | UIA 读到空名称的按钮与滑块 | 补 `AutomationProperties.Name` |
+
+### 8.4 本轮未验证 / 不修复
+
+- **开机启动**：只确认了“未注册”状态（注册表 Run 项不存在）。写入会指向构建目录里的
+  exe，而打包形态未定（ROADMAP E1/R3）；打包后需要 StartupTask，阶段 E 再实测。
+- **封面图**：UI 已接入 `CoverUri`，但本轮没有控制端投送带封面的媒体，未做真实验证。
+- **UI 侧播放联动**：进度/暂停/Seek 在真实投送时的界面反馈未在本轮重测（阶段 B 已验证服务端链路）。
+- **MSIX 下的托盘与开机启动差异**：按 ROADMAP 风险项，留到阶段 E 打包时验证。
+- 托盘图标位于隐藏图标区（任务栏策略未改），“可见性”只验证到 UIA 能读到。
