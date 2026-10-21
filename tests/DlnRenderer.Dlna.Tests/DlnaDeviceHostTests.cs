@@ -135,9 +135,11 @@ public class DlnaDeviceHostTests
         var getControl = await client.GetAsync("/control/avtransport");
         Assert.Equal(HttpStatusCode.MethodNotAllowed, getControl.StatusCode);
 
+        // A SUBSCRIBE without CALLBACK/NT is not a valid GENA request: the spec's answer is 412,
+        // not 501 - eventing exists now, the request was simply incomplete.
         var subscribe = new HttpRequestMessage(HttpMethod.Parse("SUBSCRIBE"), "/event/avtransport");
         var subscribeResponse = await client.SendAsync(subscribe);
-        Assert.Equal(HttpStatusCode.NotImplemented, subscribeResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.PreconditionFailed, subscribeResponse.StatusCode);
 
         var missing = await client.GetAsync("/nope");
         Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);

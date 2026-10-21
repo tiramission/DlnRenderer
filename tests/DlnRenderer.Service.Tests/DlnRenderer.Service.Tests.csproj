@@ -14,6 +14,15 @@
     <PackageReference Include="xunit.runner.visualstudio" />
   </ItemGroup>
 
+  <!--
+    The callback endpoint is shared with the DLNA tests by linking the source file rather than
+    referencing that test project: test projects do not reference each other, and duplicating a
+    socket server would let the two copies drift apart.
+  -->
+  <ItemGroup>
+    <Compile Include="..\DlnRenderer.Dlna.Tests\Support\CallbackServer.cs" Link="Support\CallbackServer.cs" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\..\src\DlnRenderer.Service\DlnRenderer.Service.csproj" />
     <ProjectReference Include="..\..\src\DlnRenderer.Dlna\DlnRenderer.Dlna.csproj" />

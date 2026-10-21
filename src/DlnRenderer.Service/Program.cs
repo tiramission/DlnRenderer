@@ -78,6 +78,15 @@ internal static class Program
             session = new RendererSession(player, presenter, dlnaOptions, log.Write);
 
             host = new DlnaDeviceHost(dlnaOptions, session, log.Write);
+
+            // GENA is fed from the session's own state changes - the same values the IPC snapshot
+            // exposes - so subscribers and the UI cannot disagree about what is playing.
+            var eventing = host.Eventing;
+            session.TransportEventRaised += status =>
+                eventing.UpdateAvTransport(status.State, status.ErrorMessage, status.Duration);
+            session.RenderingEventRaised += (volume, muted) => eventing.UpdateRenderingControl(volume, muted);
+            session.MediaReplaced += eventing.NoteMediaChanged;
+
             host.Start();
             session.DiscoveryActive = host.SsdpActive;
             session.ControlUrl = host.ControlUrl;

@@ -1,5 +1,6 @@
 using System.Net;
 using DlnRenderer.Dlna.AvTransport;
+using DlnRenderer.Dlna.Gena;
 using DlnRenderer.Dlna.Http;
 using DlnRenderer.Dlna.Soap;
 using DlnRenderer.Dlna.Ssdp;
@@ -8,9 +9,9 @@ using DlnRenderer.Dlna.Upnp;
 namespace DlnRenderer.Dlna;
 
 /// <summary>
-/// Owns the network side of the renderer: the HTTP endpoint (description, SCPDs, SOAP control)
-/// and the SSDP responder/announcer. Protocol handling itself lives in the services, so this type
-/// only routes requests and manages lifetimes.
+/// Owns the network side of the renderer: the HTTP endpoint (description, SCPDs, SOAP control,
+/// GENA subscriptions) and the SSDP responder/announcer. Protocol handling itself lives in the
+/// services, so this type only routes requests and manages lifetimes.
 /// </summary>
 public sealed class DlnaDeviceHost : IAsyncDisposable
 {
@@ -20,6 +21,7 @@ public sealed class DlnaDeviceHost : IAsyncDisposable
     private readonly AvTransportService _avTransport;
     private readonly ConnectionManagerService _connectionManager = new();
     private readonly RenderingControl.RenderingControlService _renderingControl;
+    private readonly GenaEventing _eventing;
 
     private SimpleHttpServer? _http;
     private SsdpServer? _ssdp;
@@ -35,6 +37,7 @@ public sealed class DlnaDeviceHost : IAsyncDisposable
         _log = log ?? (_ => { });
         _avTransport = new AvTransportService(renderer, _log);
         _renderingControl = new RenderingControl.RenderingControlService(renderer, _log);
+        _eventing = new GenaEventing(options.Eventing, renderer, _log);
     }
 
     public bool IsRunning => _http is not null;
@@ -48,6 +51,9 @@ public sealed class DlnaDeviceHost : IAsyncDisposable
     public bool SsdpActive => _ssdp?.IsRunning == true;
 
     public IReadOnlyList<IPAddress> SsdpAddresses => _ssdp?.BoundAddresses ?? [];
+
+    /// <summary>Eventing subsystem. The service pushes player state changes through it.</summary>
+    public GenaEventing Eventing => _eventing;
 
     public void Start()
     {
@@ -65,9 +71,9 @@ public sealed class DlnaDeviceHost : IAsyncDisposable
 
         var advertised = _options.ListenAddress ?? SelectAddress();
         var baseUrl = $"http://{advertised}:{http.Port}";
-        var avTransportScpd = ScpdBuilder.BuildAvTransport();
-        var connectionManagerScpd = ScpdBuilder.BuildConnectionManager();
-        var renderingControlScpd = ScpdBuilder.BuildRenderingControl();
+        _avTransportScpd = ScpdBuilder.BuildAvTransport();
+        _connectionManagerScpd = ScpdBuilder.BuildConnectionManager();
+        _renderingControlScpd = ScpdBuilder.BuildRenderingControl();
 
         _http = http;
         DescriptionUrl = baseUrl + DlnaPaths.Description;
@@ -91,22 +97,15 @@ public sealed class DlnaDeviceHost : IAsyncDisposable
                 throw;
             }
         }
-
-        _description = string.Empty;
-        _avTransportScpd = avTransportScpd;
-        _connectionManagerScpd = connectionManagerScpd;
-        _renderingControlScpd = renderingControlScpd;
     }
 
-    private string _description = string.Empty;
     private string _avTransportScpd = string.Empty;
     private string _connectionManagerScpd = string.Empty;
     private string _renderingControlScpd = string.Empty;
 
     /// <summary>
-    /// Builds the device description for the address the control point actually used.
-    /// <c>URLBase</c> must match a reachable endpoint on a multi-homed host, so it is derived from
-    /// the request's Host header instead of a single configured address.
+    /// Builds the device description. Service URLs are relative, so the document stays valid whichever
+    /// interface the control point used to reach it.
     /// </summary>
     private string BuildDescription(DlnHttpRequest request)
     {
@@ -144,6 +143,10 @@ public sealed class DlnaDeviceHost : IAsyncDisposable
             await _http.DisposeAsync().ConfigureAwait(false);
             _http = null;
         }
+
+        // After the HTTP endpoint closed: no subscriber can arrive while eventing shuts down, and
+        // pending notifications are cancelled rather than left to outlive the service.
+        await _eventing.DisposeAsync().ConfigureAwait(false);
     }
 
     private IPAddress SelectAddress()
@@ -182,8 +185,12 @@ public sealed class DlnaDeviceHost : IAsyncDisposable
                     request,
                     r => _renderingControl.HandleAsync(r, cancellationToken),
                     cancellationToken).ConfigureAwait(false),
-                DlnaPaths.AvTransportEvent or DlnaPaths.ConnectionManagerEvent or DlnaPaths.RenderingControlEvent =>
-                    DlnHttpResponse.Text(501, "GENA eventing is not implemented by this renderer."),
+                DlnaPaths.AvTransportEvent => await HandleEventAsync(
+                    GenaServiceKind.AvTransport, request, cancellationToken).ConfigureAwait(false),
+                DlnaPaths.RenderingControlEvent => await HandleEventAsync(
+                    GenaServiceKind.RenderingControl, request, cancellationToken).ConfigureAwait(false),
+                DlnaPaths.ConnectionManagerEvent => await HandleEventAsync(
+                    GenaServiceKind.ConnectionManager, request, cancellationToken).ConfigureAwait(false),
                 _ => DlnHttpResponse.Text(404, "not found"),
             };
         }
@@ -223,6 +230,24 @@ public sealed class DlnaDeviceHost : IAsyncDisposable
         _ = cancellationToken;
         return DlnHttpResponse.Soap(response);
     }
+
+    /// <summary>
+    /// Routes SUBSCRIBE / UNSUBSCRIBE on a service event endpoint.
+    /// </summary>
+    /// <remarks>
+    /// Only these two methods are legal here. NOTIFY is what a device sends, never what it receives,
+    /// so anything else is answered <c>405</c> instead of being treated as a control request.
+    /// </remarks>
+    private Task<DlnHttpResponse> HandleEventAsync(
+        GenaServiceKind service,
+        DlnHttpRequest request,
+        CancellationToken cancellationToken)
+        => request.Method switch
+        {
+            "SUBSCRIBE" => _eventing.SubscribeAsync(service, request, cancellationToken),
+            "UNSUBSCRIBE" => Task.FromResult(_eventing.Unsubscribe(request)),
+            _ => Task.FromResult(DlnHttpResponse.Text(405, "eventing endpoint accepts SUBSCRIBE and UNSUBSCRIBE")),
+        };
 
     private static DlnHttpResponse Get(DlnHttpRequest request, string body)
         => request.Method is "GET" or "HEAD" ? DlnHttpResponse.Xml(body) : DlnHttpResponse.Text(405, "GET required");

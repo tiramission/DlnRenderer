@@ -71,6 +71,17 @@ internal sealed class FakeRendererControl : IRendererControl
         return Task.CompletedTask;
     }
 
+    public TimeSpan? LastSeek2 => LastSeek;
+
+    public bool? LastMuted { get; private set; }
+
+    public Task SetMuteAsync(bool muted, CancellationToken cancellationToken)
+    {
+        Calls.Add($"mute:{muted}");
+        LastMuted = muted;
+        return Task.CompletedTask;
+    }
+
     public void Publish(RendererSnapshot snapshot)
     {
         _snapshot = snapshot;

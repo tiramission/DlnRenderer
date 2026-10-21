@@ -79,6 +79,12 @@ internal sealed class FakeTransportRenderer : ITransportRenderer
 
     public int Volume { get; set; } = 50;
 
+    /// <summary>Number of times the player was actually asked to change volume.</summary>
+    public int SetVolumeCalls { get; private set; }
+
+    /// <summary>Number of times the player was actually asked to change mute.</summary>
+    public int SetMuteCalls { get; private set; }
+
     public bool Muted { get; set; }
 
     public Task<int> GetVolumeAsync(CancellationToken cancellationToken) => Task.FromResult(Volume);
@@ -86,6 +92,7 @@ internal sealed class FakeTransportRenderer : ITransportRenderer
     public Task SetVolumeAsync(int volume, CancellationToken cancellationToken)
     {
         Calls.Add($"volume:{volume}");
+        SetVolumeCalls++;
         if (FailVolume is not null)
         {
             throw new InvalidOperationException(FailVolume);
@@ -100,6 +107,7 @@ internal sealed class FakeTransportRenderer : ITransportRenderer
     public Task SetMuteAsync(bool muted, CancellationToken cancellationToken)
     {
         Calls.Add($"mute:{muted}");
+        SetMuteCalls++;
         Muted = muted;
         return Task.CompletedTask;
     }

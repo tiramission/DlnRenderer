@@ -20,4 +20,6 @@ public interface IRendererControl
     Task SeekAsync(TimeSpan position, CancellationToken cancellationToken);
 
     Task SetVolumeAsync(int volume, CancellationToken cancellationToken);
+
+    Task SetMuteAsync(bool muted, CancellationToken cancellationToken);
 }

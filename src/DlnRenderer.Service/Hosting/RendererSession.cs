@@ -43,6 +43,22 @@ public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsy
     /// <summary>Raised on the player's event thread whenever the published snapshot changes.</summary>
     public event Action<RendererSnapshot>? SnapshotChanged;
 
+    /// <summary>
+    /// Raised when AVTransport state that GENA subscribers care about changed (transport state,
+    /// status, duration) or when the current medium was replaced.
+    /// </summary>
+    /// <remarks>
+    /// Separate from <see cref="SnapshotChanged"/> because the IPC snapshot also changes on every
+    /// position update, while eventing must stay proportional to real state changes.
+    /// </remarks>
+    public event Action<PlaybackStatus>? TransportEventRaised;
+
+    /// <summary>Raised when volume or mute changed. Carries the values the player actually reports.</summary>
+    public event Action<int, bool>? RenderingEventRaised;
+
+    /// <summary>Raised when a new medium became the current one.</summary>
+    public event Action? MediaReplaced;
+
     public Uri? CurrentUri
     {
         get
@@ -146,6 +162,10 @@ public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsy
             }
 
             _log($"player loading {Describe(uri)}");
+
+            // The current URI is part of every AVTransport event, so a media switch is an event even
+            // when the transport state happens to stay the same (A -> B while playing).
+            MediaReplaced?.Invoke();
         }
         finally
         {
@@ -439,6 +459,11 @@ public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsy
 
         _log($"player status {status.State} kind={status.MediaKind} pos={status.Position.TotalSeconds:F1} error={status.ErrorMessage}");
         SnapshotChanged?.Invoke(GetSnapshot());
+
+        // Eventing is fed from the same status the IPC snapshot and the overlay use, so a subscriber
+        // can never be told something the renderer itself does not believe.
+        TransportEventRaised?.Invoke(status);
+        RenderingEventRaised?.Invoke(status.Volume, status.Muted);
     }
 
     /// <summary>

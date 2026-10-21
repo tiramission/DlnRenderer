@@ -34,6 +34,9 @@ public sealed class MpvPlayer : IMediaPlayer
     private bool _loadPending;
     private int _loadedEntryId;
     private int _lastRequestedEntryId;
+    private readonly SemaphoreSlim _orderLock = new(1, 1);
+    private int _lastIssuedTicket;
+    private int _appliedTicket;
     private int _entryCounter;
     private bool _paused;
     private bool _coreIdle;
@@ -41,8 +44,15 @@ public sealed class MpvPlayer : IMediaPlayer
     private bool _hasAudio;
     private double _position;
     private double _duration;
-    private double _volume = 100;
-    private bool _muted;
+    /// <summary>Volume as raw bits, so the event thread and readers never tear a double.</summary>
+    private long _volumeBits = BitConverter.DoubleToInt64Bits(100);
+
+    private double _volume
+    {
+        get => BitConverter.Int64BitsToDouble(Interlocked.Read(ref _volumeBits));
+        set => Interlocked.Exchange(ref _volumeBits, BitConverter.DoubleToInt64Bits(value));
+    }
+    private volatile bool _muted;
     private string? _title;
     private string? _error;
 
@@ -239,7 +249,16 @@ public sealed class MpvPlayer : IMediaPlayer
             () => MpvNative.Command(context, "seek", seconds, "absolute+exact")).ConfigureAwait(false);
     }
 
-    public Task SetVolumeAsync(int volume, CancellationToken cancellationToken)
+    /// <summary>
+    /// Sets the player volume and returns once the change is observable.
+    /// </summary>
+    /// <remarks>
+    /// libmpv applies the property asynchronously and reports it back through its event loop. Returning
+    /// as soon as the command was issued made "SetVolume then GetVolume" read the previous value while
+    /// playback was active, because the cached state had not been updated yet. Waiting here keeps the
+    /// REST-like contract control points and the UI both assume: after the call, reads see the value.
+    /// </remarks>
+    public async Task SetVolumeAsync(int volume, CancellationToken cancellationToken)
     {
         if (volume is < 0 or > 100)
         {
@@ -247,16 +266,50 @@ public sealed class MpvPlayer : IMediaPlayer
         }
 
         var context = RequireContext();
-        return RunCommandAsync(
+        await RunCommandAsync(
             "volume",
             cancellationToken,
-            () => MpvNative.SetDouble(context, "volume", volume));
+            () => MpvNative.SetDouble(context, "volume", volume)).ConfigureAwait(false);
+
+        await WaitForAsync(() => Math.Abs(CurrentVolume - volume) < 0.01, cancellationToken).ConfigureAwait(false);
     }
 
-    public Task SetMuteAsync(bool muted, CancellationToken cancellationToken)
+    /// <summary>Sets mute and returns once the change is observable, for the same reason as volume.</summary>
+    public async Task SetMuteAsync(bool muted, CancellationToken cancellationToken)
     {
         var context = RequireContext();
-        return RunCommandAsync("mute", cancellationToken, () => MpvNative.SetFlag(context, "mute", muted));
+        await RunCommandAsync("mute", cancellationToken, () => MpvNative.SetFlag(context, "mute", muted))
+            .ConfigureAwait(false);
+
+        await WaitForAsync(() => CurrentMuted == muted, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Waits, briefly and with cancellation, until <paramref name="condition"/> holds.
+    /// </summary>
+    /// <remarks>
+    /// Bounded on purpose: a player that never reports the change must not hang the caller, and the
+    /// value it eventually reads is still whatever the player says. The timeout is generous compared
+    /// with one event-loop iteration (tens of milliseconds).
+    /// </remarks>
+    /// <summary>Current volume, read without tearing a concurrent write.</summary>
+    private double CurrentVolume => BitConverter.Int64BitsToDouble(Interlocked.Read(ref _volumeBits));
+
+    /// <summary>Current mute flag.</summary>
+    private bool CurrentMuted => _muted;
+
+    private static async Task WaitForAsync(Func<bool> condition, CancellationToken cancellationToken)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (condition())
+            {
+                return;
+            }
+
+            await Task.Delay(10, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     public Task<PlaybackStatus> GetStatusAsync(CancellationToken cancellationToken)
@@ -472,7 +525,7 @@ public sealed class MpvPlayer : IMediaPlayer
                     _duration = BitConverter.Int64BitsToDouble(Marshal.ReadInt64(data));
                     break;
                 case "volume":
-                    _volume = BitConverter.Int64BitsToDouble(Marshal.ReadInt64(data));
+                    Interlocked.Exchange(ref _volumeBits, BitConverter.DoubleToInt64Bits(BitConverter.Int64BitsToDouble(Marshal.ReadInt64(data))));
                     break;
                 case "pause":
                     _paused = Marshal.ReadInt32(data) != 0;
@@ -758,18 +811,54 @@ public sealed class MpvPlayer : IMediaPlayer
         return status;
     }
 
+    /// <summary>
+    /// Runs one player command, applied in the order commands were issued.
+    /// </summary>
+    /// <remarks>
+    /// Commands used to be dispatched with an unsynchronised <c>Task.Run</c> each, so two threads
+    /// racing on the same property could reach libmpv in either order: twenty concurrent
+    /// <c>SetVolume</c> calls left the player on a value that was not the last one requested.
+    /// A semaphore alone is not enough either - whoever wins the race for the lock runs first, so the
+    /// order still follows the scheduler. Each command therefore takes a ticket on entry and waits
+    /// for its turn, which makes "the last caller wins" true rather than merely likely.
+    /// </remarks>
     private async Task RunCommandAsync(string label, CancellationToken cancellationToken, Func<int> action)
     {
         ThrowIfDisposed();
         cancellationToken.ThrowIfCancellationRequested();
 
-        await Task.Run(
-            () =>
+        var ticket = Interlocked.Increment(ref _lastIssuedTicket);
+
+        // Wait until every earlier command has been applied.
+        await _orderLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            while (Volatile.Read(ref _appliedTicket) != ticket - 1)
             {
-                ThrowIfDisposed();
-                Check(action(), label);
-            },
-            cancellationToken).ConfigureAwait(false);
+                _orderLock.Release();
+                await Task.Yield();
+                await _orderLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            _orderLock.Release();
+        }
+
+        try
+        {
+            await Task.Run(
+                () =>
+                {
+                    ThrowIfDisposed();
+                    Check(action(), label);
+                },
+                cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _appliedTicket, ticket);
+        }
     }
 
     /// <summary>

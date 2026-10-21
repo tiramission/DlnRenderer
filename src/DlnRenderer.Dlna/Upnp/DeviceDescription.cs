@@ -226,6 +226,10 @@ public static class ScpdBuilder
             Variable("PossibleRecordQualityModes", "string", false),
             Variable("CurrentRecordQualityMode", "string", false, ["NOT_IMPLEMENTED"]),
             Variable("CurrentPlayMode", "string", false, ["NORMAL"]),
+            // AVTransport eventing is carried by LastChange, whose value is the escaped Event XML.
+            // The individual variables stay non-evented: the AV specifications require exactly this
+            // shape, and clients that receive a bare TransportState notification ignore it.
+            Variable("LastChange", "string", true),
             Variable("A_ARG_TYPE_InstanceID", "ui4", false),
             Variable("A_ARG_TYPE_SeekMode", "string", false, ["REL_TIME", "ABS_TIME"]),
             Variable("A_ARG_TYPE_SeekTarget", "string", false),

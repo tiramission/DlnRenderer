@@ -84,6 +84,7 @@ public sealed class ServiceClient : IAsyncDisposable
         string command,
         double? seekSeconds = null,
         int? volume = null,
+        bool? muted = null,
         CancellationToken cancellationToken = default)
     {
         var pipe = _pipe;
@@ -108,6 +109,7 @@ public sealed class ServiceClient : IAsyncDisposable
                     Command = command,
                     SeekSeconds = seekSeconds,
                     Volume = volume,
+                    Muted = muted,
                 },
                 timeout.Token).ConfigureAwait(false);
         }

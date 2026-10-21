@@ -35,5 +35,8 @@ public sealed record DlnaOptions
 
     public string ServerHeader { get; init; } = "Windows/10 UPnP/1.0 DlnRenderer/0.1";
 
+    /// <summary>GENA eventing limits and callback policy.</summary>
+    public Gena.GenaOptions Eventing { get; init; } = new();
+
     public string Udn => $"uuid:{Uuid:D}";
 }

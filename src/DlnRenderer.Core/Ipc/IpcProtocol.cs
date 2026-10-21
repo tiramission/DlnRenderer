@@ -46,6 +46,7 @@ public static class IpcCommands
     public const string Stop = "Stop";
     public const string Seek = "Seek";
     public const string SetVolume = "SetVolume";
+    public const string SetMute = "SetMute";
 }
 
 /// <summary>State reported by the service; UI and protocol layers both project from this.</summary>
@@ -82,6 +83,8 @@ public sealed record IpcMessage
     public double? SeekSeconds { get; init; }
 
     public int? Volume { get; init; }
+
+    public bool? Muted { get; init; }
 
     public bool? Success { get; init; }
 

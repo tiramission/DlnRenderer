@@ -31,6 +31,7 @@ public sealed class MainPageViewModel : ObservableObject, IAsyncDisposable
     private double _positionSeconds;
     private double _durationSeconds;
     private double _volume = 100;
+    private bool _muted;
     private bool _hasError;
     private string _errorText = string.Empty;
     private bool _hasMedia;
@@ -61,6 +62,9 @@ public sealed class MainPageViewModel : ObservableObject, IAsyncDisposable
 
     public double Volume { get => _volume; private set => SetProperty(ref _volume, value); }
 
+    /// <summary>Player mute state, as reported by the service snapshot.</summary>
+    public bool IsMuted { get => _muted; private set => SetProperty(ref _muted, value); }
+
     public bool HasError { get => _hasError; private set => SetProperty(ref _hasError, value); }
 
     public string ErrorText { get => _errorText; private set => SetProperty(ref _errorText, value); }
@@ -88,7 +92,9 @@ public sealed class MainPageViewModel : ObservableObject, IAsyncDisposable
 
     public Task SetVolumeAsync(double volume) => SendAsync(IpcCommands.SetVolume, volume: (int)Math.Round(volume));
 
-    private async Task SendAsync(string command, double? seekSeconds = null, int? volume = null)
+    public Task SetMuteAsync(bool muted) => SendAsync(IpcCommands.SetMute, muted: muted);
+
+    private async Task SendAsync(string command, double? seekSeconds = null, int? volume = null, bool? muted = null)
     {
         if (!IsConnected)
         {
@@ -100,7 +106,7 @@ public sealed class MainPageViewModel : ObservableObject, IAsyncDisposable
             }
         }
 
-        var snapshot = await _client.SendAsync(command, seekSeconds, volume).ConfigureAwait(true);
+        var snapshot = await _client.SendAsync(command, seekSeconds, volume, muted).ConfigureAwait(true);
         if (snapshot is null)
         {
             ReportError("后台服务没有响应，请检查服务是否仍在运行。");
@@ -170,6 +176,7 @@ public sealed class MainPageViewModel : ObservableObject, IAsyncDisposable
         PositionSeconds = status.Position.TotalSeconds;
         DurationSeconds = status.Duration?.TotalSeconds ?? 0;
         Volume = status.Volume;
+        IsMuted = status.Muted;
 
         if (status.State == PlaybackState.Error)
         {

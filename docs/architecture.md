@@ -456,3 +456,71 @@ DLNA/IPC 命令 ─►        │
 6. 服务把 mpv 日志转发到服务日志：被拒绝的文件从此有可诊断的原因。
 
 上述改动均有回归测试；`SessionWindowLifecycleTests` 专门覆盖快速 Play/Stop/重播序列。
+---
+
+## 14. GENA 事件订阅
+
+### 14.1 结构
+
+```
+控制端 ──SUBSCRIBE/UNSUBSCRIBE──► DlnaDeviceHost ──► GenaEventing
+                                                      ├─ GenaRequestParser（头校验、超时钳制）
+                                                      ├─ GenaCallbackPolicy（SSRF 防护）
+                                                      ├─ GenaSubscriptionRegistry（生命周期、配额）
+                                                      └─ GenaNotifier（有界投递）
+RendererSession ──TransportEventRaised/RenderingEventRaised──► GenaEventing ──► NOTIFY
+```
+
+事件源与 IPC 快照、UI 显示来自**同一个** `PlaybackStatus`，因此三者不会给出互相矛盾的状态。
+
+### 14.2 事件变量
+
+| 服务 | 事件化变量 | 说明 |
+| --- | --- | --- |
+| AVTransport | `LastChange` | AV 规范要求的唯一事件变量；`TransportState`、`TransportStatus`、`CurrentTrackURI`、`CurrentTrackDuration`、`CurrentTransportActions` 位于其内层转义 XML |
+| RenderingControl | `LastChange` | 含 `Volume`、`Mute`，均带 `channel="Master"` |
+| ConnectionManager | 无 | 本渲染器没有需要事件化的连接管理状态 |
+
+SCPD 中只有 `LastChange` 标记 `sendEvents="yes"`，其余变量保持 `no` —— 这与 AV 规范一致，
+也避免客户端收到它无法解析的裸变量通知。
+
+### 14.3 协议语义
+
+- **SEQ**：每个订阅独立计数，初始事件为 0，此后每次 +1。多订阅者不共享计数器，否则会看到缺号。
+- **初始事件**：订阅成功后立即发送，包含全部事件化变量的当前值。
+- **状态码**：缺/错头 → `412`；`SID` 与 `CALLBACK`/`NT` 混用 → `400`；未知或过期 `SID` → `412`；
+  超出配额 → `500`；非 SUBSCRIBE/UNSUBSCRIBE 方法 → `405`。
+- **续订**：保留 SID 与 SEQ，只更新截止时间；过期订阅不可复活。
+- **位置不推送**：见 §5.4。
+
+### 14.4 回调安全（SSRF）
+
+`GenaCallbackPolicy` 只接受：
+
+- `http` scheme（拒绝 https：没有为该客户端配置信任；拒绝 file/ftp 等任何非 HTTP 操作）；
+- 无凭据的 URL；
+- **IP 字面量**而非域名（不对攻击者提供的名称做 DNS 解析）；
+- 拒绝 loopback、未指定地址、组播/广播、以及 `169.254.0.0/16`（云元数据地址）；
+  IPv4-mapped IPv6 会先被还原为 IPv4 再判定，避免绕过；
+- 私有网段**默认允许**：真实控制端就是局域网内的手机，若按“同子网”限制会切断经第二个网卡
+  或 VPN 接入的客户端。可用 `GenaOptions.AllowPrivateNetworkCallbacks` 收紧。
+- 不跟随重定向、不走系统代理、限制响应体大小。
+
+### 14.5 投递与故障隔离
+
+- 发布是 fire-and-forget：播放/暂停/SOAP 路径 **不会等待**任何回调。
+- 并发闸门限制在途 NOTIFY 数量；连接超时与总超时分开设置。
+- 每个订阅独立记录连续失败次数，达到上限即丢弃该订阅；一个客户端失败不影响其他订阅者。
+- 服务关闭时先关闭 HTTP 端点，再取消在途投递，避免通知比服务活得更久。
+
+### 14.6 本轮修复的缺陷
+
+1. **`<m:Name>` 构建失败**：`XName` 不允许本地名含冒号，事件体构建抛异常导致所有通知丢失。
+   改为用事件命名空间 + 本地名创建元素。
+2. **并发命令乱序**：`MpvPlayer` 每个命令各自 `Task.Run`，同一属性的并发写入可能后发先至。
+   改为取号排队，使“最后调用者胜出”成立。
+3. **`SetVolume` 返回时值尚不可读**：libmpv 异步应用属性并回传事件；现在等待值可观测后再返回，
+   使“设置后立即读取”成立。
+4. **`DesiredMute` 接受了 `yes`/`no`**：UPnP 布尔只允许 `0/1`、`false/true`，宽松解析会发明客户端没发过的值。
+5. **投递闸门满时静默跳过**：改为计入失败预算，避免僵死回调永久占用配额。
+6. **过期清理周期可能长于超时**：改为不超过最短可授予超时的一半。

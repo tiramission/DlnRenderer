@@ -10,7 +10,7 @@ dotnet build DlnRenderer.sln -c Debug
 dotnet test DlnRenderer.sln -c Debug
 ```
 
-实测结果：**251 通过 / 0 失败，0 跳过**（Core 25、Player 15、Dlna 150、Service 61）。
+实测结果：**328 通过 / 0 失败，0 跳过**（Core 25、Player 20、Dlna 207、Service 76）。
 
 连续 3 次完整运行均为 0 失败（`dotnet test DlnRenderer.sln -c Debug --no-build`）。
 
@@ -220,3 +220,49 @@ soap action GetTransportInfo from 192.168.1.72   (控制端持续轮询)
 7. **Stop 后再投屏只有声音没有画面**（回归）：`Hide` 会把 mpv 子窗口隐藏并缩到 1x1，而 `ShowFullscreen` 的幂等快速路径只检查顶层矩形，
    于是顶层"看起来已全屏"直接返回，子窗口一直不可见。现快速路径同时校验子窗口可见性，正常路径显式调用 `ShowWindow(child, SW_SHOW)`。
    该缺陷在真机 Stop→重播时复现，截图取证后修复。
+---
+
+## 5. GENA 事件订阅与 RenderingControl（本轮新增）
+
+### 5.1 自动化覆盖
+
+| 测试 | 数量 | 覆盖内容 |
+| --- | --- | --- |
+| `GenaSubscriptionTests` | 23 | 订阅返回 SID/TIMEOUT、续订保留 SID、无效 SID → 412、SID+CALLBACK 混用 → 400、过期订阅不可续订、取消订阅与重复取消、缺失/错误头 → 412、回调 URL 安全策略、初始事件 `SEQ=0`、状态变化 SEQ 递增、相同状态不重复通知、多订阅者各自独立计数、RenderingControl 音量/静音事件、XML 转义、失败订阅者不影响他人、拒绝连接的端口、无响应回调超时、订阅数上限 → 500、服务关闭清理、过期清理 |
+| `RenderingControlServiceTests` | 35 | 音量读取/写入回读、边界 0/100、非法值（越界→601、格式错→402）不触及播放器、静音 0/1/true/false、非法布尔值拒绝、Channel 缺省为 Master、未知 Channel、未知/非法 InstanceID、未实现动作 → 401、预设、播放器故障 → 501 |
+| `RenderingControlIntegrationTests` | 10 | **真实 libmpv**：SOAP SetVolume 真正改变播放器音量、GetVolume 读回播放器值、静音真实生效、音量变化触发 GENA 事件且携带实际值、快照与播放器一致、音量/静音在停止与切换媒体后保留、播放中与停止时均可设置、越界值 fault 且不改播放器、静音事件送达 |
+| `VolumeStateConsistencyTests` | 5 | 连续写入后播放器与快照一致且每次写入立即可读、取消订阅与发布并发、快照与 SOAP 对静音的表述一致、慢回调下关闭不阻塞、播放失败后事件系统仍可用 |
+| `MpvCommandOrderingTests` | 5 | 音量/静音在 setter 返回后立即可观测、播放期间同样成立、连续写入以最后一次为准、越界拒绝 |
+
+### 5.2 真实服务端到端（loopback + 真实 LAN 回调）
+
+`tools/control-point/verify-eventing.ps1` 用真实 HTTP 回调端点驱动真实服务：
+
+| 阶段 | 断言 |
+| --- | --- |
+| 订阅 | AVTransport / RenderingControl 返回 `uuid:` SID，TIMEOUT 按请求授予 |
+| 初始事件 | `SEQ=0`、包含 `propertyset` 与 `LastChange`、初始状态 STOPPED、带 `NT`/`NTS` |
+| 续订 | 返回同一 SID，更新 TIMEOUT |
+| 音量 | `SetVolume` 触发携带新值的事件，`GetVolume` 读回 63 |
+| 静音 | `SetMute` 触发事件，`GetMute` 读回 1 |
+| 非法输入 | 越界音量 → 601，且播放器仍为 63 |
+| 订阅拒绝 | 缺 CALLBACK、link-local（169.254.169.254）、loopback 回调均 → 412 |
+| 取消 | UNSUBSCRIBE → 200，重复 → 412 |
+
+实测：**22/22 通过**。
+
+### 5.3 尚未完成的验证（重要）
+
+- **真实第三方控制端未完成本轮回归。** 本轮结束时服务日志中**没有任何来自手机的投屏记录**
+  （`SetAVTransportURI` 计数为 0，唯一的 SUBSCRIBE 来自本机自测）。
+  因此**不能声称 GENA 已通过真实客户端互操作验证**。
+- 上一轮（阶段 2.1）确认过 BubbleUPnP 与手机视频 App 能发现并投屏；本轮改动没有修改 SSDP、
+  设备描述结构或 AVTransport 动作，自动化回归覆盖了这些路径，但**实机复测仍需补做**。
+- 曾观察到手机（192.168.1.12）取走描述后未请求 SCPD，当时服务已停止运行，
+  不能据此判断客户端行为。
+
+### 5.4 已知限制
+
+- 位置（`RelativeTimePosition`）不通过事件推送，需控制端轮询 `GetPositionInfo`。
+  这是 AV 规范的做法，也避免每个订阅者每秒收到 4 次 HTTP 请求。
+- ConnectionManager 没有可事件化的变量；其订阅端点存在但初始事件为空属性集。

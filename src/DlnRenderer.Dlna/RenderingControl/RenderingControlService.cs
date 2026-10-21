@@ -121,11 +121,12 @@ public sealed class RenderingControlService(ITransportRenderer renderer, Action<
     {
         var value = text?.Trim();
 
-        // UPnP sends DesiredMute as either "0"/"1" or "false"/"true".
+        // UPnP boolean state variables are exactly "0"/"1" or "false"/"true". Accepting looser forms
+        // ("yes", "no") would silently invent a value the client never sent.
         return value?.ToLowerInvariant() switch
         {
-            "1" or "true" or "yes" => true,
-            "0" or "false" or "no" => false,
+            "1" or "true" => true,
+            "0" or "false" => false,
             _ => throw UpnpException.InvalidArgs("DesiredMute is required and must be a boolean"),
         };
     }

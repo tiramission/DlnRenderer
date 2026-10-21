@@ -257,6 +257,15 @@ public sealed class IpcServer : IAsyncDisposable
                     await _session.SetVolumeAsync(volume, _cts.Token).ConfigureAwait(false);
                     break;
 
+                case IpcCommands.SetMute:
+                    if (request.Muted is not { } muted)
+                    {
+                        return Failure(request, "SetMute requires a Muted value");
+                    }
+
+                    await _session.SetMuteAsync(muted, _cts.Token).ConfigureAwait(false);
+                    break;
+
                 case "Shutdown":
                     _log.Write("shutdown requested over ipc");
                     _shutdownRequested();
