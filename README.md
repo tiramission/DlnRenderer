@@ -41,18 +41,19 @@
 
 ```text
 dotnet test DlnRenderer.sln -c Debug
-# 391 通过 / 0 失败 / 0 跳过
-# Core 43、Player 20、Dlna 218、Service 110
+# 398 通过 / 0 失败 / 0 跳过
+# Core 43、Player 23、Dlna 222、Service 110
 ```
 
-协议层另有真实服务端到端脚本，见 `tools/control-point/`。
+协议层另有真实服务端到端脚本，见 `tools/control-point/`；
+媒体兼容性实测见 `tools/media-compat/`；安装/卸载脚本见 `tools/package/`。
 
 ## 尚未实现
 
 | 项 | 说明 |
 | --- | --- |
-| **开机启动** | 设置页有开关，但目前写入 HKCU Run 指向构建目录的 exe；打包形态定案后需要 StartupTask 并实测 |
-| **安装包** | 无 `packaging/`；`Package.appxmanifest` 的 Publisher 仍是模板占位值 |
+| **开机启动** | 设置页开关与安装脚本都写 HKCU Run；安装形态下已实测（阶段 E），但"登录后自动启动并可直接投屏"未做完整重启验证 |
+| **安装包** | 有绿色包 + 安装脚本（`tools/package/`，见 [docs/packaging.md](docs/packaging.md)），但**未经干净机器验证**，且未代码签名；`Package.appxmanifest` 的 Publisher 仍是模板占位值 |
 | **字幕与多音轨** | 播放器层无字幕加载与音轨选择接口 |
 | **播放队列** | 单媒体模型，`NextURI` 恒为空 |
 | **网络接口变化** | 拔插网线或切换 Wi-Fi 后不会重新加入多播组，需要重启服务 |

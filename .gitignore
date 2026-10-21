@@ -65,6 +65,9 @@ project.lock.json
 project.fragment.lock.json
 artifacts/
 
+# Distributable output of tools/package/build-dist.ps1 (never committed: it contains libmpv).
+dist/
+
 # Tye
 .tye/
 

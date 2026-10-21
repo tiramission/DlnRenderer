@@ -745,3 +745,39 @@ H.264/VP9/HEVC 10bit/AV1 → `d3d11va-copy`，VP8 → `nvdec-copy`，MPEG-2/MPEG
 但主流控制端只投单个媒体 URI，不会提供字幕 URI，AVTransport 1.0 也没有音轨选择动作。
 在没有控制端会发这些请求的前提下实现接口只会得到死代码，因此延后，
 重新评估条件记录在 `ROADMAP.md` 阶段 D。
+
+---
+
+## 16. 分发与运行形态（阶段 E）
+
+### 16.1 决定
+
+绿色包 + 安装脚本，**不做 MSIX**。完整论证、备选方案与重新评估的触发条件见
+`docs/packaging.md`。
+
+### 16.2 进程拓扑（安装后）
+
+```text
+%ProgramFiles%\DlnRenderer\
+├── DlnRenderer.exe            WinUI 3 UI：窗口、托盘、设置页
+├── DlnRenderer.Service.exe    后台服务：SSDP、HTTP/SOAP、GENA、libmpv、IPC 服务端
+├── libmpv-2.dll               只有服务进程加载它
+├── Assets\                    窗口标题栏图标与托盘图标（运行时从磁盘加载）
+└── *.dll                      WinUI / Windows App SDK 依赖
+```
+
+UI 启动时按 `ServiceClient.ResolveServicePath()` 的优先级查找服务：**先看自己所在目录**
+（安装后的布局），找不到再回退到开发布局。所以安装后无需额外配置即可拉起服务。
+
+### 16.3 端口与防火墙
+
+固定 TCP 端口 **18090**（`ServiceStartupOptions.DefaultHttpPort`）+ UDP 1900。固定端口是
+防火墙规则、控制端缓存与书签能跨重启生效的前提。`firewall-rules.ps1` 只对专用/域网络放行，
+公网配置文件下不开放。
+
+### 16.4 停止顺序（为什么不是 kill）
+
+卸载/升级先通过 IPC `Shutdown` 请求服务退出，与托盘「退出应用」是同一条路径。硬杀会留下
+两个问题：SSDP socket 进入 `TIME_WAIT` 导致新装的副本短时间内无法重新加入多播组；视频窗口
+与 named pipe 由服务自己持有，异常退出不会释放干净。因此脚本顺序是：
+IPC 请求 → 等待退出 → 仅在仍存活时 `Stop-Process` → 进程消失后才动文件（否则 DLL 被锁）。

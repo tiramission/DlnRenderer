@@ -521,3 +521,70 @@ pwsh tools/media-compat/measure-media.ps1     # 跑测量并生成 docs/media-ma
 - 只测 2.5 秒自生成样片：验证「能解码、能推进」，不覆盖长片、码率上限、seek 精度。
 - 只在本机（x64 + D3D11 显卡）测过；无硬解的机器走软解，格式集合一致但 CPU 占用不同。
 - 没有真实第三方控制端投送 MKV/HEVC 的回归记录（阶段 B 只覆盖了常见 mp4）。
+## 10. 阶段 E：安装、升级与卸载（2026-10-21）
+
+### 10.1 分发形式决策
+
+绿色包 + 安装脚本，不做 MSIX。完整理由、备选方案与重新评估条件见
+[`docs/packaging.md`](packaging.md)。决定性约束：**后台服务必须在 UI 退出后继续运行**，
+而打包应用启动 full-trust 子进程的存活周期、防火墙入站规则与"用户可替换 libmpv DLL"
+（GPL/LGPL 义务）三件事本项目都未验证。
+
+### 10.2 交付物与实测命令
+
+| 脚本 | 作用 |
+| --- | --- |
+| `tools/package/build-dist.ps1` | 发布 App + Service（Release / win-x64 / 框架依赖），复制 libmpv 与 Assets，并校验产物（缺 exe / native DLL / 图标即失败） |
+| `tools/package/install.ps1` | 停旧实例 → 复制到 `%ProgramFiles%\DlnRenderer` → 防火墙规则 → 开机启动 → 快捷方式 |
+| `tools/package/stop-service.ps1` | 通过 IPC `Shutdown` 干净停止服务（与托盘"退出应用"同一路径） |
+| `tools/package/firewall-rules.ps1` | `-Action Add` / `Remove`：UDP 1900（SSDP）+ TCP 18090（描述/SOAP/GENA） |
+| `tools/package/uninstall.ps1` | 停进程 → 删防火墙规则 → 删数据目录 → 删快捷方式与启动项 → 删安装目录 |
+
+### 10.3 三步实测（本机，Windows 11 build 26300）
+
+**安装**（`install.ps1`，管理员 PowerShell）
+
+- 输出：`installed to C:\Program Files\DlnRenderer`、防火墙两条规则 verified、
+  快捷方式创建、HKCU Run 写入。
+- 运行验证：从安装目录启动 `DlnRenderer.Service.exe --device-name InstallTest`，
+  日志显示 `ssdp alive announced on 192.168.1.9`、`http listening on 0.0.0.0:18090`；
+  `GET http://127.0.0.1:18090/description.xml` 返回 **HTTP 200**，
+  `<friendlyName>InstallTest</friendlyName>` 正确。
+- **真实设备发现**：日志出现 `ssdp answered 6 target(s) for ST=ssdp:all to 192.168.1.12`
+  （局域网内另一台设备在搜索），说明防火墙规则确实放通了入站 SSDP。
+
+**升级**（服务进程运行中再次执行 `install.ps1`）
+
+- 升级前：`DlnRenderer.Service` PID 4768 在运行，安装目录有旧版标记文件。
+- 脚本先通过 IPC 停掉该进程（`service closed the connection` → `DlnRenderer.Service has exited`），
+  再覆盖文件，最后确认 `tasklist` 中已无该进程 —— **无孤儿进程**。
+- 副作用记录：升级不会删除安装目录里用户自己放的文件（本次的标记文件仍在）。
+  升级覆盖的是发布产物，不做整目录清空，这是有意的（避免误删日志/配置）。
+
+**卸载**（`uninstall.ps1 -RemoveShortcuts`，管理员 PowerShell）
+
+- IPC 停止 → 无进程 → 防火墙两条规则移除 → `%LOCALAPPDATA%\DlnRenderer` 删除 →
+  开始菜单/桌面快捷方式删除 → HKCU Run 项删除 → `C:\Program Files\DlnRenderer` 删除。
+- 卸载后复核：数据目录不存在、两个快捷方式不存在、`Get-NetFirewallRule DlnRenderer*` 计数 **0**、
+  安装目录不存在。
+- 未提权运行时脚本不再硬失败：防火墙步骤报告警告并继续完成其余清理。
+
+### 10.4 本轮发现并修复的脚本缺陷
+
+| 缺陷 | 现象 | 修复 |
+| --- | --- | --- |
+| `$LASTEXITCODE` 在调用运算符调用脚本时保持 `$null` | 安装/卸载脚本在防火墙步骤**误报**失败（规则其实已建/已删） | 改为实际查询 `Get-NetFirewallRule` 验证状态 |
+| `PublishTrimmed=true` + 框架依赖发布 | `dotnet publish` 报 NETSDK1102 | 显式 `-p:PublishTrimmed=false`（框架依赖本就无需裁剪） |
+| Assets 是发布产物中的文件名 | 递归复制 Assets 失败 | 复制前删除同名文件，并把 `Assets\AppIcon.ico` 等列入产物校验 |
+| 卸载脚本在未提权时整体中断 | 无管理员权限的用户连数据目录都清不掉 | 防火墙步骤包 try/catch，其余清理继续 |
+
+### 10.5 未验证 / 已知限制
+
+- **未在干净虚拟机或 Windows Sandbox 中执行**：三步都在开发机本机完成，机器上已有
+  .NET 运行时与 Windows App Runtime。干净机器上的首次运行（缺运行时、缺防火墙提示）未验证。
+- **未验证 UI 进程本身**：只启动并验证了 `DlnRenderer.Service.exe`。WinUI 窗口、托盘、
+  设置在安装形态下的表现未测（阶段 C 已验证开发目录形态）。
+- **未做升级播放中保留/终止的实测**：升级时服务被停掉，正在播放的会话随之结束。
+  ROADMAP E6 允许"正确终止"，但"播放中升级"这一具体场景未跑。
+- **Windows 10 未测**：安装脚本与防火墙命令在 Win10 上应等价，但未实测。
+- **无"添加或删除程序"条目**：卸载依赖 `uninstall.ps1`，见 `docs/packaging.md` §3。
