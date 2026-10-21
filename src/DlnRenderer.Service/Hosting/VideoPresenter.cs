@@ -33,6 +33,7 @@ public sealed class VideoPresenter : IAsyncDisposable, IMonitorEventsSink
     private const int WsChild = 0x40000000;
 
     private const int SwHide = 0;
+    private const int SwShow = 5;
     private const int SwShowNoActivate = 4;
 
     private const uint WmApp = 0x8000;
@@ -350,12 +351,17 @@ public sealed class VideoPresenter : IAsyncDisposable, IMonitorEventsSink
 
         var target = FullscreenGeometry.FullscreenFor(selected);
 
-        // Idempotent fast path: once the window already covers the selected monitor, nothing is
-        // applied, so repeated player events cannot make it flicker or re-take the foreground.
-        // The measured rectangle alone is not enough: a window that is positioned but hidden (or was
-        // hidden and not yet re-shown) has the fullscreen rectangle too, and skipping ShowWindow
-        // there left the overlay invisible for the whole cast.
-        if (_visible && IsWindowVisible(_window) && _monitor == selected.Monitor && ReadClientBounds() == target)
+        // Idempotent fast path: nothing is applied when this would be a no-op, so repeated player
+        // events cannot make the window flicker or re-take the foreground.
+        // Every observable piece of state is part of the condition - the rectangle alone is not
+        // enough. Hiding shrinks the window to 1x1 and hides the mpv surface, so a window that is
+        // merely positioned can look "already fullscreen" while its video child stays hidden, which
+        // is exactly how the picture went missing after Stop-then-Play.
+        if (_visible
+            && IsWindowVisible(_window)
+            && IsWindowVisible(_child)
+            && _monitor == selected.Monitor
+            && ReadClientBounds() == target)
         {
             EnsureTopmost();
             return;
@@ -363,6 +369,11 @@ public sealed class VideoPresenter : IAsyncDisposable, IMonitorEventsSink
 
         _monitor = selected.Monitor;
         Volatile.Write(ref _presentationState, "fullscreen");
+
+        // The mpv surface is a child window, and hiding the overlay hides it. Showing only the top
+        // level would leave a black window with audio playing, so the surface is made visible first;
+        // the WM_SIZE that follows sizes it to the client area.
+        _ = ShowWindow(_child, SwShow);
 
         // Because the window is WS_POPUP with no frame, the requested rectangle is also the client
         // rectangle, so the video covers the monitor exactly with no border band. Placement happens

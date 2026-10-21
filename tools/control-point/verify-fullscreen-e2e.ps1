@@ -51,9 +51,30 @@ function Get-Presentation([uint32]$processId) {
     $r = New-Object Win+RECT
     [Win]::GetWindowRect($h, [ref]$r) | Out-Null
     $ex = [Win]::GetWindowLongPtr($h, -20).ToInt64()
+
+    # The mpv surface is a child window: the overlay can be "visible" while painting nothing, which
+    # is what an empty window with audio sounds like. Report the surface separately.
+    $script:surfaceVisible = $false
+    $script:surfaceWidth = 0
+    $surfaceCallback = [Win+EnumProc]{
+        param($child, $l)
+        $csb = New-Object System.Text.StringBuilder 256
+        [Win]::GetClassName($child, $csb, 256) | Out-Null
+        if ($csb.ToString() -eq "Static") {
+            $cr = New-Object Win+RECT
+            [Win]::GetWindowRect($child, [ref]$cr) | Out-Null
+            $script:surfaceVisible = [Win]::IsWindowVisible($child)
+            $script:surfaceWidth = $cr.R - $cr.L
+        }
+        return $true
+    }
+    [Win]::EnumChildWindows($h, $surfaceCallback, [IntPtr]::Zero) | Out-Null
+
     return [pscustomobject]@{
         Hwnd       = ("0x{0:X}" -f $h.ToInt64())
         Visible    = [Win]::IsWindowVisible($h)
+        Surface    = $script:surfaceVisible
+        SurfaceWidth = $script:surfaceWidth
         Topmost    = [bool]($ex -band 0x8)
         ToolWindow = [bool]($ex -band 0x80)
         Width      = $r.R - $r.L
@@ -132,6 +153,8 @@ try {
     Write-Host ("  visible={0} topmost={1} origin={2} size={3}x{4} state={5}" -f $p.Visible, $p.Topmost, $p.Origin, $p.Width, $p.Height, ((State) -replace '.*<CurrentTransportState>([^<]+).*', '$1'))
     Check "window visible while playing" $p.Visible
     Check "window is topmost while playing" $p.Topmost
+    Check "mpv surface is visible while playing (picture, not just audio)" $p.Surface
+    Check "mpv surface covers the window (not a 1x1 leftover)" ($p.SurfaceWidth -gt 800)
     Check "window covers a full monitor (not the taskbar-reduced work area)" ($p.Width -gt 800 -and $p.Height -gt 600)
     $hwndPlaying = $p.Hwnd
 
@@ -189,6 +212,7 @@ try {
     Write-Host ("  visible={0} topmost={1} hwnd={2}" -f $p.Visible, $p.Topmost, $p.Hwnd)
     Check "window hidden after Stop" (-not $p.Visible)
     Check "topmost dropped after Stop" (-not $p.Topmost)
+    Check "mpv surface hidden after Stop" (-not $p.Surface)
     Check "window handle kept for the next play" ($p.Hwnd -eq $hwndPlaying)
 
     Write-Host "== 8. Play again re-shows the same window =="
@@ -198,6 +222,8 @@ try {
     Write-Host ("  visible={0} topmost={1} hwnd={2} state={3}" -f $p.Visible, $p.Topmost, $p.Hwnd, ((State) -replace '.*<CurrentTransportState>([^<]+).*', '$1'))
     Check "window visible again after replay" $p.Visible
     Check "same HWND after replay" ($p.Hwnd -eq $hwndPlaying)
+    Check "mpv surface visible again after replay (picture, not just audio)" $p.Surface
+    Check "surface sized to the window after replay" ($p.SurfaceWidth -gt 800)
 
     Write-Host "== 9. Service shutdown while fullscreen =="
     Stop-Process -Id $svc.Id -Force

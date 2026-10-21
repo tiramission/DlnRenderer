@@ -437,6 +437,9 @@ DLNA/IPC 命令 ─►        │
 - **显示器变化**：`MonitorEventsListener` 接收 `WM_DISPLAYCHANGE`/`WM_SETTINGCHANGE`，250 ms 去抖后重算矩形。
 - **退出**：`Escape` 隐藏窗口（回到播放器外层），不影响 AVTransport 状态；其余按键（Alt+Tab、Win）一律交给 `DefWindowProc`。
 - **隐藏**：先退出置顶再 `SW_HIDE` 并缩到 1x1。非前台进程调用 `ShowWindow(SW_HIDE)` 可能只改内部标志而不清屏，缩窗能保证从屏幕上消失。
+- **显示**：顶层与 mpv 子窗口必须一起恢复。`Hide` 隐藏的是子窗口（真正承载画面），因此 `ShowFullscreen` 先 `ShowWindow(child, SW_SHOW)` 再放置顶层，
+  且幂等快速路径必须同时校验"顶层可见 && 子窗口可见 && 矩形正确"。只检查顶层时，Stop 之后再投屏会出现"有声音、无画面"——这是实际发生过的回归。
+- **验证口径**：判断"是否有画面"不能只看顶层窗口的 `IsWindowVisible`，必须检查 mpv 子窗口的可见性与尺寸。
 
 ### 13.5 DPI
 

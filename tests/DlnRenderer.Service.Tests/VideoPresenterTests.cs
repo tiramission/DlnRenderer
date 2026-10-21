@@ -155,6 +155,57 @@ public class VideoPresenterTests
     }
 
     [Fact]
+    public async Task Showing_after_hiding_makes_the_mpv_surface_visible_again()
+    {
+        // Regression: hiding shrinks the overlay to 1x1 and hides the mpv child window. Showing only
+        // the top level left the child hidden, so the overlay was on screen but painted nothing -
+        // audio with a black/empty window, which is exactly what a Stop-then-Play produced.
+        await using var presenter = await VideoPresenter.StartAsync();
+        var child = presenter.ChildHandle;
+
+        presenter.ShowFullscreen();
+        Assert.True(presenter.WaitForIdle(IdleTimeout));
+        Assert.True(IsWindowVisible(child), "the video surface must be visible while presenting");
+
+        presenter.Hide();
+        Assert.True(presenter.WaitForIdle(IdleTimeout));
+        Assert.False(IsWindowVisible(child), "hiding the overlay must hide the video surface too");
+
+        presenter.ShowFullscreen();
+        Assert.True(presenter.WaitForIdle(IdleTimeout));
+
+        Assert.True(IsWindowVisible(presenter.WindowHandle));
+        Assert.True(IsWindowVisible(child), "the surface must be visible again, or the picture is missing");
+
+        // The surface must also cover the client area again, not keep the 1x1 it was shrunk to.
+        _ = GetClientRect(presenter.WindowHandle, out var client);
+        _ = GetWindowRect(child, out var childRect);
+        Assert.True(childRect.Right - childRect.Left > 100, $"surface is still {childRect.Right - childRect.Left}px wide");
+        Assert.Equal(client.Right, childRect.Right - childRect.Left);
+        Assert.Equal(client.Bottom, childRect.Bottom - childRect.Top);
+    }
+
+    [Fact]
+    public async Task Repeated_play_pause_stop_cycles_keep_the_surface_visible()
+    {
+        // The control-point pattern: Play, Pause, Play, Stop, Play. Each visible phase must have a
+        // visible surface; the bug only appeared when a Hide happened between two Shows.
+        await using var presenter = await VideoPresenter.StartAsync();
+        var child = presenter.ChildHandle;
+
+        for (var i = 0; i < 3; i++)
+        {
+            presenter.ShowFullscreen();
+            Assert.True(presenter.WaitForIdle(IdleTimeout));
+            Assert.True(IsWindowVisible(child), $"surface hidden after show, cycle {i}");
+
+            presenter.Hide();
+            Assert.True(presenter.WaitForIdle(IdleTimeout));
+            Assert.False(IsWindowVisible(child), $"surface still visible after hide, cycle {i}");
+        }
+    }
+
+    [Fact]
     public async Task Show_hide_cycles_do_not_leak_windows()
     {
         await using var presenter = await VideoPresenter.StartAsync();

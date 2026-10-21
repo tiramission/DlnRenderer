@@ -10,7 +10,7 @@ dotnet build DlnRenderer.sln -c Debug
 dotnet test DlnRenderer.sln -c Debug
 ```
 
-实测结果：**249 通过 / 0 失败，0 跳过**（Core 25、Player 15、Dlna 150、Service 59）。
+实测结果：**251 通过 / 0 失败，0 跳过**（Core 25、Player 15、Dlna 150、Service 61）。
 
 连续 3 次完整运行均为 0 失败（`dotnet test DlnRenderer.sln -c Debug --no-build`）。
 
@@ -184,7 +184,7 @@ soap action GetTransportInfo from 192.168.1.72   (控制端持续轮询)
 | --- | --- | --- |
 | `VideoWindowPolicyTests` | 14 | Play 后全屏；Pause/Buffering/Transitioning 保持；Stop/Error 隐藏；**预加载（paused 但未 Play）不占屏**；纯音频不占屏；媒体切换时的陈旧事件不驱动窗口 |
 | `FullscreenGeometryTests` | 11 | 覆盖整块显示器（非工作区）；多显示器负坐标；首选显示器保持；显示器拔出回退；分辨率变化重算；真实桌面至少一个可用显示器 |
-| `VideoPresenterTests` | 12 | 真实 HWND：无标题栏/无边框的 WS_POPUP、`WS_EX_TOPMOST`、`WS_EX_TOOLWINDOW`、矩形等于某块显示器；重复 Show 幂等；Hide 保留 HWND 且退出置顶；并发 Show/Hide 后状态自洽；Dispose 释放 |
+| `VideoPresenterTests` | 14 | 真实 HWND：无标题栏/无边框的 WS_POPUP、`WS_EX_TOPMOST`、`WS_EX_TOOLWINDOW`、矩形等于某块显示器；重复 Show 幂等；Hide 保留 HWND 且退出置顶；**Hide 后再 Show 必须重新显示 mpv 子窗口并恢复尺寸**；反复 Play/Stop 循环；并发 Show/Hide 后状态自洽；Dispose 释放 |
 | `SessionWindowLifecycleTests` | 8 | `RendererSession` + 真实 libmpv：Load 不占屏 / Play 占屏并置顶；Pause 保持、Stop 隐藏；播完自动隐藏；切换媒体复用同一 HWND；连续 Play/Stop；加载失败不留空白全屏；Seek/Pause 不掉出置顶；快照与窗口一致 |
 
 窗口相关测试归入 `video-window` collection（`DisableParallelization = true`）：置顶带是桌面级共享资源，并行执行会互相干扰。
@@ -205,7 +205,7 @@ soap action GetTransportInfo from 192.168.1.72   (控制端持续轮询)
 | 重新 `Play` | 同一 HWND 再次全屏 |
 | 服务退出 | 进程退出，无残留窗口 |
 
-实测：**21/21 通过**（显示器 2560x1440 @150% 缩放）。
+实测：**26/26 通过**（显示器 2560x1440 @150% 缩放）。其中 4 项专门检查 mpv 子窗口是否可见、是否覆盖整窗——只看顶层窗口会漏掉"有声音无画面"。
 
 ### 4.3 本轮复现并修复的缺陷
 
@@ -217,3 +217,6 @@ soap action GetTransportInfo from 192.168.1.72   (控制端持续轮询)
    现按 libmpv 的 playlist entry 编号丢弃过期事件。
 5. **状态机粘滞**：`Stopped -> Paused` 不是合法转换，重播时状态机被永久卡住；加载入口与真实播放恢复均显式经过 `Transitioning`。
 6. **快速 Play/Stop 后重载丢失事件**：重载带重试与有界等待，失败时明确报错而不是假装成功。
+7. **Stop 后再投屏只有声音没有画面**（回归）：`Hide` 会把 mpv 子窗口隐藏并缩到 1x1，而 `ShowFullscreen` 的幂等快速路径只检查顶层矩形，
+   于是顶层"看起来已全屏"直接返回，子窗口一直不可见。现快速路径同时校验子窗口可见性，正常路径显式调用 `ShowWindow(child, SW_SHOW)`。
+   该缺陷在真机 Stop→重播时复现，截图取证后修复。
