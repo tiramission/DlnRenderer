@@ -1,33 +1,51 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
-  xmlns:mp="http://schemas.microsoft.com/appx/2014/phone/manifest"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
   xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  xmlns:systemai="http://schemas.microsoft.com/appx/manifest/systemai/windows10"
-  IgnorableNamespaces="uap uap10 rescap systemai">
+  IgnorableNamespaces="uap uap3 uap5 uap10 desktop rescap">
 
+  <!--
+    Identity is the upgrade contract: Publisher + Name must never change, or Windows treats a
+    new build as a different product instead of an upgrade. The Publisher here is the
+    development certificate's subject; see docs/msix-assessment.md for the production path.
+  -->
   <Identity
-    Name="32472985-586B-4E65-8F0F-2851824575BD"
+    Name="DlnRenderer"
     Publisher="CN=AppPublisher"
-    Version="1.0.0.0" />
-
-  <mp:PhoneIdentity PhoneProductId="32472985-586B-4E65-8F0F-2851824575BD" PhonePublisherId="00000000-0000-0000-0000-000000000000"/>
+    Version="0.1.0.0" />
 
   <Properties>
     <DisplayName>DlnRenderer</DisplayName>
-    <PublisherDisplayName>AppPublisher</PublisherDisplayName>
+    <PublisherDisplayName>DlnRenderer contributors</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
+    <!--
+      libmpv is GPL-2.0-or-later (docs/licenses.md). Users must be able to replace the DLL, and
+      package integrity enforcement would block that, so it is explicitly off. Everything else in
+      the package is still signed as a whole.
+    -->
     <uap10:PackageIntegrity>
-      <uap10:Content Enforcement="on"/>
+      <uap10:Content Enforcement="off"/>
     </uap10:PackageIntegrity>
   </Properties>
 
   <Dependencies>
     <TargetDeviceFamily Name="Windows.Universal" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26226.0" />
     <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26226.0" />
+    <!--
+      Framework dependency on the Windows App Runtime the app was built against
+      (Directory.Packages.props: Microsoft.WindowsAppSDK 2.5.1). Without it the packaged process
+      does not get the framework package in its package graph, so the first WinRT activation (the
+      SDK's auto-initializer) throws REGDB_E_CLASSNOTREG (0x80040154) and the UI exits before any
+      window or tray icon exists.
+    -->
+    <PackageDependency Name="Microsoft.WindowsAppRuntime.2" MinVersion="2.5.1.0"
+      Publisher="CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US" />
   </Dependencies>
 
   <Resources>
@@ -36,22 +54,57 @@
 
   <Applications>
     <Application Id="App"
-      Executable="$targetnametoken$.exe"
+      Executable="DlnRenderer.exe"
       EntryPoint="$targetentrypoint$">
       <uap:VisualElements
         DisplayName="DlnRenderer"
-        Description="DlnRenderer"
+        Description="DLNA media renderer"
         BackgroundColor="transparent"
         Square150x150Logo="Assets\Square150x150Logo.png"
         Square44x44Logo="Assets\Square44x44Logo.png">
         <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
         <uap:SplashScreen Image="Assets\SplashScreen.png" />
       </uap:VisualElements>
+
+      <Extensions>
+        <!--
+          Start with Windows: the packaged replacement for the HKCU Run entry. Disabled by default;
+          the settings page turns it on through the StartupTask API (StartupRegistration).
+          The user can also toggle it in Settings > Apps > Startup.
+        -->
+        <desktop:Extension Category="windows.startupTask">
+          <desktop:StartupTask
+            TaskId="DlnRendererStartup"
+            Enabled="false"
+            DisplayName="DlnRenderer" />
+        </desktop:Extension>
+      </Extensions>
     </Application>
   </Applications>
 
+  <!--
+    This is a per-user package. There is deliberately NO windows.service extension: a packaged
+    service runs under SCM in session 0, which has no desktop, so libmpv cannot create a swapchain
+    and a cast shows no video (mpv: "Failed to create swapchain", 0x887a0022). The UI starts
+    DlnRenderer.Service.exe in the user's own session instead, exactly like the portable build,
+    and the service keeps running after the UI window is closed. See docs/msix-assessment.md.
+  -->
   <Capabilities>
+    <!--
+      Only what the renderer needs: it is a LAN receiver, not an internet client.
+        internetClientServer   - inbound control-plane connections (device description, SOAP,
+                                GENA callbacks) plus the outbound requests it makes itself.
+        privateNetworkClientServer - same for private networks, which is where DLNA lives.
+      Neither grants outbound access to arbitrary internet hosts beyond what these imply, and
+      neither creates firewall rules.
+    -->
+    <Capability Name="internetClientServer" />
+    <Capability Name="privateNetworkClientServer" />
+
+    <!--
+      Required for a packaged desktop (Win32/.NET) app: the UI and the service it starts run as
+      full-trust processes, not inside an app container. Restricted, so the package must be signed.
+    -->
     <rescap:Capability Name="runFullTrust" />
-    <systemai:Capability Name="systemAIModels"/>
   </Capabilities>
 </Package>

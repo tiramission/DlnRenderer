@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 
 namespace DlnRenderer.Service.Hosting;
@@ -164,12 +165,57 @@ public sealed class ServiceLog : IDisposable
 
 public static class ServicePaths
 {
+    /// <summary>
+    /// Root for state that must survive restarts: the device UUID and the logs.
+    /// </summary>
+    /// <remarks>
+    /// The location depends on which account the process runs under, and the difference is not
+    /// cosmetic. Under an interactive user, <c>%LOCALAPPDATA%\DlnRenderer</c> is right: it is
+    /// per-user, needs no elevation, and the settings page writes next to it. Under a service
+    /// account, <c>LocalApplicationData</c> resolves into the service profile, which is not where
+    /// the user's settings live and is wiped when the package is repaired. Those runs need the
+    /// machine-wide <c>%ProgramData%\DlnRenderer</c> instead. (The shipped package registers no
+    /// service; the branch exists for a service registered by hand with <c>sc create</c>.)
+    /// </remarks>
     public static string DataDirectory
     {
         get
         {
+            if (IsServiceAccount)
+            {
+                var programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+                if (!string.IsNullOrWhiteSpace(programData))
+                {
+                    return Path.Combine(programData, "DlnRenderer");
+                }
+            }
+
             var root = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
             return Path.Combine(root, "DlnRenderer");
+        }
+    }
+
+    /// <summary>
+    /// True when this process runs as a Windows service under a machine account. Detected from the
+    /// session rather than from a flag, so an accidental interactive run of the service binary still
+    /// writes to the user profile.
+    /// </summary>
+    public static bool IsServiceAccount
+    {
+        get
+        {
+            // Session 0 is where services live; an interactive desktop session is never 0. This is
+            // the same signal the OS uses, and it costs no privileges to read.
+            try
+            {
+                return Process.GetCurrentProcess().SessionId == 0;
+            }
+            catch (Exception)
+            {
+                // If the query fails, assume the safer layout: writing to a service profile
+                // would lose the data, writing to ProgramData merely needs an ACL.
+                return false;
+            }
         }
     }
 

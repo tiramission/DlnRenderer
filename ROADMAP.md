@@ -1,6 +1,7 @@
 # DlnRenderer 开发路线图
 
-> 本文件基于 **2026-10-21** 仓库真实状态审查（`main` @ `12be11d`，阶段 A 完成后修订）编写。
+> 本文件最初基于 **2026-10-21** 仓库真实状态审查（`main` @ `12be11d`）编写，之后随阶段 A–E 逐段修订；
+> 阶段 E2（用户级 MSIX）修订于 **2026-10-22**。§1–§2 的现状描述是阶段 A 之前的基线，以各阶段小节为准。
 > 所有结论尽量指向实际文件、测试或提交；无法从仓库证明的内容标记为 **待验证**。
 > 状态用词严格区分「代码存在」「自动化测试通过」「真实设备验收通过」——三者不等价。
 
@@ -53,7 +54,7 @@ DlnRenderer 是一个 **DLNA Media Renderer（DMR）**：它让手机、平板�
 | Named Pipe IPC（当前用户隔离） | 已实现且已验证 | `IpcServer.cs`；`IpcServerTests` |
 | UI 退出后继续播放、复用服务 | 已实现且已验证 | `RendererSession.cs`；真实手工验证（`docs/testing.md` §3.4） |
 
-自动化测试实测：**391 通过 / 0 失败 / 0 跳过**（Core 43、Player 20、Dlna 218、Service 110）。
+自动化测试实测（2026-10-22）：**403 通过 / 0 失败 / 0 跳过**（Core 43、Player 23、Dlna 222、Service 115）。
 
 ### 1.4 最重要的技术债务、风险与产品缺口
 
@@ -371,7 +372,7 @@ DlnRenderer 是一个 **DLNA Media Renderer（DMR）**：它让手机、平板�
 | 状态观察 | 客户端界面上的播放状态随操作变化（而非一直"播放中"） |
 | UI 退出 | 关闭 UI 后播放继续；重开 UI 状态正确 |
 
-**测试要求**：全部为人工验证；自动化部分已在 391 个测试中覆盖，不重复。
+**测试要求**：全部为人工验证；自动化部分已在 403 个测试中覆盖，不重复。
 
 **DoD**：至少两个不同实现的控制端，验收表逐项有结论（通过/客户端不支持/失败）。
 失败项必须有后续任务编号。
@@ -547,13 +548,14 @@ D4/D5 的前提是控制端真的会提供这些信息——若 D1 数据显示�
 
 | # | 任务 | 结论 | 证据 |
 | --- | --- | --- | --- |
-| E1 | 决定分发形式 | **完成**：绿色包 + 安装脚本，**不做 MSIX** | `docs/packaging.md`。决定性约束是服务必须在 UI 退出后常驻；MSIX 的 full-trust 子进程存活周期、入站防火墙规则、以及"用户可替换 libmpv DLL"（GPL/LGPL 义务 vs 包完整性校验）三项均未验证 |
-| E2 | Publisher / 版本号 / 图标 | **部分完成**：版本号由 `Directory.Build.props` 统一为 `0.1.0`（设备描述已显示 `modelNumber 0.1.0`），图标复用模板资源；**Publisher 仍未定**，需要代码签名证书（F5） | 见下"未完成" |
+| E1 | 决定分发形式 | **完成**：绿色包 + 安装脚本；**用户级 MSIX 亦为正式交付目标**（E2 修订） | `docs/packaging.md`。早期"不做 MSIX"基于 full-trust 子进程这一唯一已知路径，已推翻；曾试 `desktop7:Service`（SCM 托管）但服务落 session 0 导致投屏无画面，已放弃，改用户级包，详见 `docs/msix-assessment.md` |
+| E2 | Publisher / 版本号 / 图标 | **部分完成**：版本号由 `Directory.Build.props` 统一为 `0.1.0`（设备描述已显示 `modelNumber 0.1.0`），MSIX 渠道补齐了缺失的 Assets；**Publisher 仍未定**，需要代码签名证书（F5） | 见下"未完成" |
 | E3 | 构建脚本产出可安装包 | **完成** | `tools/package/build-dist.ps1`：发布 App+Service（Release/win-x64/框架依赖）、复制 libmpv 与 Assets、校验产物完整性（缺 exe / native DLL / 图标即失败）。实测产出 210 MB 文件夹 |
 | E4 | 防火墙规则 | **完成** | `tools/package/firewall-rules.ps1`：UDP 1900 + TCP 18090（`ServiceStartupOptions.DefaultHttpPort`），仅专用/域网络，服务规则限定到 exe。**已实测放通真实设备**：安装后日志出现 `ssdp answered 6 target(s) ... to 192.168.1.12` |
 | E5 | 卸载清理 | **完成** | `tools/package/uninstall.ps1`：先 IPC `Shutdown`（不是 kill，避免 SSDP socket 进入 TIME_WAIT）→ 终止残留进程 → 删防火墙规则 → 删数据目录 → 删快捷方式与启动项 → 删安装目录。实测卸载后：数据目录、快捷方式、防火墙规则（计数 0）、安装目录全部不存在 |
 | E6 | 升级路径 | **完成（有记录的限制）** | 实测：服务运行中再次安装 → 先停旧进程（PID 4768 退出确认）→ 覆盖文件 → 无孤儿进程。限制见 `docs/testing.md` §10.5：未测"播放中升级"的会话保留 |
 | E7 | 首次运行引导 | **未开始** | 需要干净机器验证（缺 .NET 运行时时的提示），与 E 的三步验证同属未做项 |
+| E8 | 用户级 MSIX 渠道（E2 追加） | **完成（范围见"未完成"）** | `build-msix.ps1` + `verify-service.ps1`：用户级包（无 SCM 服务，仅 `runFullTrust`）、`Add-AppxPackage` 当前用户安装；UI 启动不崩、服务在 session 1、真实控制端投送无 mpv 错误。修复 `REGDB_E_CLASSNOTREG` 与 session 0 无画面两个致命缺陷。证据 `docs/testing.md` §11 |
 
 **未完成 / 阻塞项**
 
@@ -562,7 +564,9 @@ D4/D5 的前提是控制端真的会提供这些信息——若 D1 数据显示�
 - **干净机器验证**：安装三步全部在开发机完成（已具备 .NET 运行时与 Windows App Runtime）。
   干净虚拟机 / Windows Sandbox 中的首次运行未验证。
 - **Windows 10 未测**。
-- **MSIX 未实测即排除**：这是有理由的排除而非疏漏，理由与重新评估条件在 `docs/packaging.md` §2/§5。
+- **用户级 MSIX 的画面与托盘未做截图确认**：已确认 UI 进程/窗口句柄、服务在 session 1、
+  `video surface created` 与 presenter 切换、真实控制端投送 `Playing` 且无 mpv 报错（`docs/testing.md` §11）；
+  画面是否真的显示、托盘图标是否可见需要目视。开机启动（`StartupTask`）未做注销/重启实测。
 
 **任务与可交付物**
 
@@ -597,8 +601,64 @@ D4/D5 的前提是控制端真的会提供这些信息——若 D1 数据显示�
 
 **风险与应对**：MSIX 与后台子进程、防火墙规则交互复杂 → 若 MSIX 阻碍服务常驻，
 优先考虑绿色包 + 安装器，并在决策记录中写明原因，不硬套 MSIX。
+（该风险已由 E8 消除：用户级 MSIX 下服务仍是 UI 在用户会话里拉起的子进程，与绿色包一致。）
 
 ---
+
+### 阶段 E2：用户级 MSIX 渠道（2026-10-22）
+
+**目标**：让用户级 MSIX 成为与绿色包并列的正式交付渠道：`Add-AppxPackage` 以当前用户安装，
+UI 能启动、有托盘、投屏有画面。
+
+**为什么单独列一节**：阶段 E 原始决策把 MSIX 整体排除；随后一版改用 `desktop7:Service`（SCM 托管）
+并验证了服务起停，但**没有真的启动过 UI、没有真的投过屏**，漏了两个致命问题（见下）。
+这一节记录的是被实测推翻后的最终形态。
+
+**关键事实**（证据见 `docs/msix-assessment.md`、`docs/testing.md` §11）：
+
+- SCM 托管的服务跑在 **session 0**，没有桌面，libmpv 报
+  `Failed to create swapchain (0x887a0022)`，投屏无画面 → **不用 `windows.service`**；
+- `windows.service` 需要机器级受限能力（`packagedServices` / `localSystemServices`），与"用户级包"互斥；
+- 清单必须声明 `Microsoft.WindowsAppRuntime.2` 框架依赖，否则 UI 启动即以
+  `REGDB_E_CLASSNOTREG (0x80040154)` 崩溃，没有窗口也没有托盘；
+- manifest 的网络能力**不创建防火墙入站规则**；
+- 同版本号、内容不同的包无法原地覆盖（`0x80073CFB`），发布必须递增版本。
+
+**任务与可交付物**
+
+| # | 任务 | 优先级 | 交付物 | 状态 |
+| --- | --- | --- | --- | --- |
+| E2.1 | 清单改用户级：去掉 `windows.service`/`packagedServices`/`localSystemServices`，保留 `runFullTrust`、`startupTask`、`PackageIntegrity off` | P0 | `Package.appxmanifest` | 完成 |
+| E2.2 | 清单加 Windows App Runtime 框架依赖 | P0 | `Package.appxmanifest` | 完成 |
+| E2.3 | 发布产物补齐 Assets；先发布 Service 再发布 App 到同一暂存目录 | P1 | `build-msix.ps1` | 完成 |
+| E2.4 | 解包回验：断言无 SCM 服务、有运行时依赖/`runFullTrust`/`startupTask`、包内文件齐全 | P1 | `build-msix.ps1` | 完成 |
+| E2.5 | 开机启动按是否有包标识分流（`StartupTask` API / HKCU Run） | P1 | `StartupRegistration.cs` | 完成（未做重启实测） |
+| E2.6 | 体检脚本：无 SCM 服务、UI 不崩、服务在用户会话、`description.xml` 可达 | P1 | `verify-service.ps1` | 完成 |
+| E2.7 | 真实控制端在用户级 MSIX 下发现并投送 | P0 | 日志证据 | 完成（192.168.1.72，`Playing`，无 mpv 错误） |
+| E2.8 | 画面与托盘图标目视确认 | P0 | 人工确认 | **未验证** |
+| E2.9 | `StartupTask` 开机启动重启实测 | P1 | 验证记录 | **未验证** |
+| E2.10 | MSIX 渠道防火墙入站规则（无提权钩子，需手动脚本或 UI 引导） | P1 | 脚本 + UI 引导 | **未实现** |
+| E2.11 | 干净机器（缺 Windows App Runtime）安装体验；卸载后数据目录策略 | P2 | 验证记录 | **未验证** |
+
+**验收标准**
+
+- [x] 打包后清单**没有** SCM 服务声明，**有**运行时依赖、`runFullTrust`、`startupTask`（解包回验）
+- [x] `Add-AppxPackage`（当前用户，无提权）安装成功，无 SCM 服务
+- [x] UI 启动不崩溃（session 1，响应正常，无 Application 1000 事件）
+- [x] 服务由 UI 拉起，运行在 session 1，日志在 `%LOCALAPPDATA%\DlnRenderer\logs`
+- [x] 真实控制端投送：`SetAVTransportURI` → `Play` → `Playing`，无 mpv swapchain 错误
+- [ ] **画面显示、托盘图标可见（目视）**
+- [ ] 开机启动经注销/重启验证
+- [ ] MSIX 渠道入站防火墙规则有明确添加方式
+
+**DoD**：E2.1–E2.7 完成；E2.8–E2.11 记录在案作为未验证项，不作为通过项。
+
+**风险与应对**：服务不再"开机即在"，只在用户登录且启用开机启动，或手动打开 UI 后可用；
+没有 SCM 的崩溃自动重启，由 UI 的重连/"重启服务"处理。这与 AGENTS.md §4
+"首版把服务作为普通后台子进程，不装 Windows Service"一致。
+
+---
+
 
 ### 阶段 F：许可证、原生依赖与发布准备
 
@@ -769,14 +829,14 @@ F (许可证) ──────────── 从 A 开始并行 ───�
 | # | 事项 | 当前状态 | 风险 | 验证方式 |
 | --- | --- | --- | --- | --- |
 | R1 | **libmpv 许可证与分发边界** | GPL-2.0-or-later 构建；`docs/licenses.md` 已记录；**未决** | 高：GPL 要求随包提供源码，可能限制分发或需换 LGPL | 获取 `-Dgpl=false` 构建并做功能对比（F2）；**不做法律结论，必要时咨询专业** |
-| R2 | **运行模型：独立进程 vs Windows 服务** | 独立进程 + 托盘（规划中） | 中：独立进程不会在用户登录前启动；Windows 服务有会话隔离问题 | 保持独立进程；如需开机启动，用"登录时启动"而非服务 |
-| R3 | **安装方式：MSIX vs 绿色包** | 未定，无 `packaging/` | 中：MSIX 对后台子进程与防火墙规则有限制 | 在 E1 用真实安装试验两种方式，记录差异 |
+| R2 | **运行模型：独立进程 vs Windows 服务** | **独立进程（UI 在用户会话里拉起）**，绿色包与用户级 MSIX 一致。已实测 SCM 托管（`desktop7:Service`）会让服务落 session 0，libmpv 无法建交换链、投屏无画面，故不用 | 低：服务不会在用户登录前启动；无 SCM 崩溃自动重启 | 保持独立进程；开机启动用"登录时启动"（HKCU Run / `StartupTask`）而非服务 |
+| R3 | **安装方式：MSIX vs 绿色包** | **两条渠道并存，均已本机验证**：绿色包（`install.ps1`）+ 用户级 MSIX（`Add-AppxPackage`，无 SCM 服务） | 中：MSIX 渠道的防火墙规则无自动方案；干净机器、开机启动重启、画面目视均未验证 | E2.8–E2.11 见阶段 E2；"manifest 能力不创建防火墙规则"已确认 |
 | R4 | **开机启动、卸载清理、升级** | 未实现 | 中：卸载残留后台进程是最常见的用户投诉 | E5/E6 用真实安装-卸载循环验证 |
 | R5 | **Windows 版本与架构兼容** | 声明 17763+，实测仅 Win11 26300；仅 x64 | 中：Windows 10 用户可能装不上 | G2 在 Win10 实机验证；ARM64 需 libmpv 构建（F3 待调查） |
 | R6 | **GENA 回调与网络输入安全** | 已实现 SSRF 防护（`GenaCallbackPolicy`） | 低-中：策略可能误伤合法客户端 | B 阶段验证真实客户端的回调是否被接受；若被拒，放宽到"同网段"并记录理由 |
 | R7 | **长时间播放与资源泄漏** | 无 8h+ 记录 | 中：内存/句柄缓慢增长难以发现 | G3 长时监测；日志轮换（A5）降低一个变量 |
 | R8 | **代码签名与构建可复现** | 未实现 | 低（个人使用）/高（对外分发） | F5/F6 |
-| R9 | **防火墙规则** | 未实现，需用户手工放行 | 中：新手最容易卡在这里，且会误判为"应用坏了" | E4 提供规则脚本或首次运行提示 |
+| R9 | **防火墙规则** | 绿色包已实现并实测放通真实设备；**MSIX 渠道未实现** | 中：新手最容易卡在这里，且会误判为"应用坏了" | E4 已交付绿色包规则脚本；MSIX 渠道没有自动方案，需手动运行脚本或 UI 引导（E2.10） |
 | R10 | **设备描述与厂商兼容** | 阶段 2.1 已解决 `d:` 前缀等问题 | 低：已通过真机验证 | 回归时保留 `validate-description.ps1` |
 | R11 | **文档与代码同步** | 已发生偏离（README/architecture） | 中：误导贡献者与 Agent | A1/A2 修复；路线图维护规则要求每阶段校对 |
 
@@ -785,6 +845,8 @@ F (许可证) ──────────── 从 A 开始并行 ───�
 - **R1 的法律结论**：GPL 再分发义务的具体边界需要法律意见，不做自行判断。
 - **R5 的 ARM64**：是否有维护良好的 ARM64 libmpv 构建，需查证上游发布渠道。
 - **R3 的 MSIX 限制**：MSIX 打包应用能否可靠启动并常驻一个非打包子进程，需实测。
+  （已由 E2 回答：不需要常驻非打包子进程——UI 在用户会话里拉起服务，与绿色包一致，用户级 MSIX 下已实测。
+  不用 `windows.service`：SCM 托管的服务在 session 0，无法出画面，见 R2。）
 
 ---
 

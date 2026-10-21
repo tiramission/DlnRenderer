@@ -10,7 +10,7 @@ dotnet build DlnRenderer.sln -c Debug
 dotnet test DlnRenderer.sln -c Debug
 ```
 
-实测结果：**391 通过 / 0 失败，0 跳过**（Core 43、Player 20、Dlna 218、Service 110）。
+实测结果（2026-10-22）：**403 通过 / 0 失败，0 跳过**（Core 43、Player 23、Dlna 222、Service 115）。
 
 连续 3 次完整运行均为 0 失败（`dotnet test DlnRenderer.sln -c Debug --no-build`）。
 
@@ -22,7 +22,7 @@ dotnet test DlnRenderer.sln -c Debug
 | `PlaybackStatusTests` | 默认值、`with` 不可变性、`MediaInfo` 必需 URI |
 | `SettingsStoreTests`（18，阶段 C） | 缺文件给默认值、读写往返、JSON 键名可读、损坏/错形/未知字段容错、非法设备名不落盘、长度上下界、原子写入（临时文件不残留）、覆盖写 |
 
-### 1.2 Player（20）
+### 1.2 Player（23）
 
 纯逻辑（不加载 native DLL）：
 
@@ -259,6 +259,9 @@ soap action GetTransportInfo from 192.168.1.72   (控制端持续轮询)
 
 ### 5.3 尚未完成的验证（重要）
 
+> 本节是阶段 2.1 结束时的快照。阶段 B 已补做真实控制端互操作，结果见 **§7**（投送链路通过，
+> 但事件订阅因 `NOTIFY` 返回 412 仍未通过），那里才是当前状态。
+
 - **真实第三方控制端未完成本轮回归。** 本轮结束时服务日志中**没有任何来自手机的投屏记录**
   （`SetAVTransportURI` 计数为 0，唯一的 SUBSCRIBE 来自本机自测）。
   因此**不能声称 GENA 已通过真实客户端互操作验证**。
@@ -478,7 +481,9 @@ winapp ui click <图标 slug> -a explorer --right    # 右键菜单
   exe，而打包形态未定（ROADMAP E1/R3）；打包后需要 StartupTask，阶段 E 再实测。
 - **封面图**：UI 已接入 `CoverUri`，但本轮没有控制端投送带封面的媒体，未做真实验证。
 - **UI 侧播放联动**：进度/暂停/Seek 在真实投送时的界面反馈未在本轮重测（阶段 B 已验证服务端链路）。
-- **MSIX 下的托盘与开机启动差异**：按 ROADMAP 风险项，留到阶段 E 打包时验证。
+- **MSIX 下的托盘与开机启动差异**：托盘已验证（阶段 C）；开机启动在 MSIX 渠道走
+  `windows.startupTask`（默认 `Enabled=false`，由设置页控制），绿色包走 HKCU Run。
+  两条路径都只在开发机本机验证过，见 §11。
 - 托盘图标位于隐藏图标区（任务栏策略未改），“可见性”只验证到 UIA 能读到。
 ## 9. 阶段 D：媒体兼容性实测（2026-10-21）
 
@@ -525,10 +530,12 @@ pwsh tools/media-compat/measure-media.ps1     # 跑测量并生成 docs/media-ma
 
 ### 10.1 分发形式决策
 
-绿色包 + 安装脚本，不做 MSIX。完整理由、备选方案与重新评估条件见
-[`docs/packaging.md`](packaging.md)。决定性约束：**后台服务必须在 UI 退出后继续运行**，
-而打包应用启动 full-trust 子进程的存活周期、防火墙入站规则与"用户可替换 libmpv DLL"
-（GPL/LGPL 义务）三件事本项目都未验证。
+绿色包 + 安装脚本，与 MSIX 渠道并存。完整理由、两条渠道的差异与重新评估条件见
+[`docs/packaging.md`](packaging.md)；MSIX 的逐项可行性论证见
+[`docs/msix-assessment.md`](msix-assessment.md)。决定性约束——**后台服务必须在 UI 退出后继续运行**——在用户级 MSIX 下由与绿色包相同的机制
+满足：UI 在用户会话里拉起服务进程，关窗不影响它。曾试过用 `desktop7:Service`（SCM 托管），
+但服务会跑在 session 0，投屏无画面，已放弃（见 §11）。
+该结论取代了本文档早期"不做 MSIX"的说法。
 
 ### 10.2 交付物与实测命令
 
@@ -588,3 +595,75 @@ pwsh tools/media-compat/measure-media.ps1     # 跑测量并生成 docs/media-ma
   ROADMAP E6 允许"正确终止"，但"播放中升级"这一具体场景未跑。
 - **Windows 10 未测**：安装脚本与防火墙命令在 Win10 上应等价，但未实测。
 - **无"添加或删除程序"条目**：卸载依赖 `uninstall.ps1`，见 `docs/packaging.md` §3。
+
+## 11. 阶段 E2：用户级 MSIX 渠道（2026-10-22）
+
+> 本节取代 2026-10-21 的旧版"MSIX 渠道与服务生命周期"。旧版验证的是 SCM 托管服务（`desktop7:Service`）
+> 的起停，结论在那个范围内是真的；但**它没有真的启动过 UI，也没有真的投过屏**，所以漏掉了两个会让
+> 产品不可用的问题（见 §11.3）。该方案已放弃，改为用户级包。
+
+### 11.1 做法
+
+用户级 MSIX 与绿色包共用同一套发布产物，区别只在安装方式。清单**不含** `windows.service`，
+服务由 UI 在用户会话里拉起。
+
+```powershell
+pwsh tools/package/build-msix.ps1                  # 发布 Service+App → 暂存 → 打包 → 签名 → 解包回验
+winapp cert install tools/package/devcert.pfx      # 一次性，管理员：信任 dev 证书
+Add-AppxPackage -Path dist/msix/DlnRenderer-x64.msix   # 当前用户，不提权
+pwsh tools/package/verify-service.ps1              # 体检
+```
+
+`build-msix.ps1` 的解包回验断言（先剥 XML 注释再匹配）：
+
+- 清单**没有** `Category="windows.service"`、`packagedServices`、`localSystemServices`；
+- 清单**有** `Microsoft.WindowsAppRuntime.2` 依赖、`runFullTrust`、`windows.startupTask`；
+- 包里有 `DlnRenderer.exe`、`DlnRenderer.Service.exe`、`libmpv-2.dll`、`Assets\AppIcon.ico`。
+
+### 11.2 实测结果
+
+| 检查项 | 结果 |
+| --- | --- |
+| 打包 + 签名 + 解包回验 | 通过，签名 `Valid (CN=AppPublisher)`，78.9 MB |
+| `Add-AppxPackage`（当前用户，无提权） | `Status: Ok`；`Get-Service DlnRenderer.Service` 无结果 |
+| `verify-service.ps1` | 全部通过 |
+| UI 启动 | session 1，`Responding=True`，有窗口句柄，无 Application 1000 崩溃事件 |
+| 服务 | 由 UI 拉起，**session 1**（上一版是 session 0） |
+| 日志位置 | `C:\Users\jaign\AppData\Local\DlnRenderer\logs\`（用户目录，未被虚拟化） |
+| 视频窗口 | `video surface created (hwnd …)`；投送时 `video presenter fullscreen/hidden` 正常切换 |
+| 真实控制端 192.168.1.72 | 取 `description.xml`/SCPD → `SUBSCRIBE` → `SetAVTransportURI` → `Play`，`Playing` |
+| 投送期间 mpv 错误 | **无**（上一版 session 0 下每次必现 swapchain 失败） |
+| 全量测试 | Core 43 / Player 23 / Dlna 222 / Service 115，共 403，0 失败 |
+
+> 测试环境注意：机器提交内存吃紧时 `dotnet test` 会报 `OutOfMemoryException` 或
+> `Win32Exception 1455 页面文件太小`，与代码无关。`dotnet build-server shutdown` 后加 `-m:1` 串行即可。
+
+### 11.3 本轮发现并修复的缺陷
+
+| 缺陷 | 现象 | 根因 | 修复 |
+| --- | --- | --- | --- |
+| **主界面打不开、没有托盘图标** | UI 每次启动即退出，事件日志 `.NET Runtime 1026`：`COMException 0x80040154 REGDB_E_CLASSNOTREG`，堆栈在 `DeploymentManagerAutoInitializer` | 清单漏了 `PackageDependency`：打包后的进程拿不到 Windows App Runtime 框架包，首次 WinRT 激活失败 | 清单加 `Microsoft.WindowsAppRuntime.2 ≥ 2.5.1.0`；`build-msix.ps1` 与 `verify-service.ps1` 都断言它 |
+| **投屏没有窗口** | 控制链路全通，但 `mpv fatal: Failed to create swapchain (0x887a0022)` → `no audio or video data played` | 服务由 SCM 托管，跑在 **session 0**，没有桌面，GPU 交换链建不出来 | 放弃 `windows.service`，改用户级包，服务在用户会话里运行 |
+| 开机启动在打包形态下会失效 | （设计层面）HKCU Run 指向 `WindowsApps\<版本>\` 路径，每次升级都变 | 该路径随版本变化且用户不可列出 | `StartupRegistration` 按是否有包标识分流：打包用 `StartupTask` API，未打包仍用 HKCU Run |
+| 同版本号重装被拒 | `Add-AppxPackage` → `0x80073CFB` | 同标识不同内容 | 开发期先 `Remove-AppxPackage`；发布必须递增版本 |
+| `build-msix.ps1` 断言误报 | `service=True`，但清单里并无服务扩展 | 清单注释里写了 "windows.service" 这几个字被正则命中 | 匹配 `Category="windows.service"`，并先剥掉 XML 注释 |
+| 整个解决方案构建失败（NETSDK1150） | `dotnet build DlnRenderer.sln` 报"非自包含可执行文件不能由自包含可执行文件引用" | 为把服务 exe 放进包给 App 加了 `ProjectReference`；`win-x64.pubxml` 令 App 自包含而 Service 不是 | 去掉引用，`build-msix.ps1` 先发布 Service 再发布 App 到同一暂存目录并断言文件在包内 |
+| App 发布输出不含服务 exe | 改文件复制后包里仍没有 `DlnRenderer.Service.exe` | `None`+`CopyToOutputDirectory` 只进构建输出，不进发布输出 | 由脚本显式暂存并双重断言 |
+| `build-msix.ps1` 两处笔误 | `Remove-Item` 删目录缺 `-Recurse`；`-ForegroundColor Green#` | — | 修正 |
+
+### 11.4 此前 SCM 方案修复的两个缺陷（代码保留）
+
+`Program.cs` 走 `StartServiceCtrlDispatcher` 并正确回报 `SERVICE_RUNNING` / `SERVICE_STOPPED`
+（`ServiceStatusReporter`）。用户级包不再使用 SCM，但这套逻辑**对被 SCM 启动的场景仍然正确**
+（例如用户自行 `sc create` 注册），并有 `ServiceLaunchDetectorTests` 覆盖；在用户级路径上它不触发。
+
+### 11.5 MSIX 渠道未验证
+
+- **画面是否真的显示在屏幕上**：我只确认了窗口创建、presenter 切换、`Playing` 且无 mpv 报错，
+  **没有截图确认**，需要目视。
+- **托盘图标**：确认了 UI 进程与窗口句柄，没有截图确认托盘图标。
+- **开机启动重启实测**：`StartupTask` 路径只验证了编译与现有测试，没有真正注销/重启。
+- **MSIX 渠道的防火墙入站规则**：没有自动方案；本机能被发现是因为绿色包的规则仍在。
+- **干净机器**：缺 Windows App Runtime 时的安装体验未验证。
+- **卸载后的数据目录**：保留策略未定，也未验证残留。
+- **正式代码签名**：当前是 dev 证书（阶段 F5）。

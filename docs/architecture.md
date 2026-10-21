@@ -185,13 +185,13 @@ AVTransport（`SetAVTransportURI`、`GetTransportInfo`、`GetPositionInfo`、`Pl
 | --- | --- | --- |
 | `DlnRenderer.App` | **已创建**（winapp `winui-mvvm` 模板） | 阶段 0 交付物：可构建、可运行的 WinUI 3 工程 |
 | `DlnRenderer.Core` | **已创建**（含真实代码 + 单元测试） | 播放状态模型是所有层的地基，先落地 |
-| `DlnRenderer.Core.Tests` | **已创建**（25 个测试） | 验证播放状态转换规则 |
+| `DlnRenderer.Core.Tests` | **已创建**（43 个测试） | 验证播放状态转换规则 |
 | `DlnRenderer.Player` | **已创建**（阶段 1.5） | libmpv P/Invoke、播放器生命周期、状态映射、Win32 视频子窗口 |
-| `DlnRenderer.Player.Tests` | **已创建**（15 个测试） | 状态映射、节流规则、原生播放/错误/顺序加载/释放 |
+| `DlnRenderer.Player.Tests` | **已创建**（23 个测试） | 状态映射、节流规则、原生播放/错误/顺序加载/释放 |
 | `DlnRenderer.Dlna` | **已创建**（阶段 3） | SSDP、HTTP、SOAP、AVTransport、ConnectionManager、DIDL、SCPD |
-| `DlnRenderer.Dlna.Tests` | **已创建**（110 个测试） | 协议解析、Fault 码、回环 HTTP 集成、网卡选择 |
+| `DlnRenderer.Dlna.Tests` | **已创建**（222 个测试） | 协议解析、Fault 码、回环 HTTP 集成、网卡选择 |
 | `DlnRenderer.Service` | **已创建**（阶段 3） | 独立后台进程：播放会话、DLNA 宿主、IPC 服务端、原生视频窗口 |
-| `DlnRenderer.Service.Tests` | **已创建**（13 个测试） | 真实 Named Pipe：命令、事件、错误、断连、协议违规 |
+| `DlnRenderer.Service.Tests` | **已创建**（115 个测试） | 真实 Named Pipe：命令、事件、错误、断连、协议违规 |
 
 依赖方向（已建立）：`App → Core`；`Service → Core, Dlna, Player`；`Dlna → Core`；`Player → Core`。
 `Core` 不反向依赖任何上层，且不引用 WinUI 或 native 代码。
@@ -752,13 +752,26 @@ H.264/VP9/HEVC 10bit/AV1 → `d3d11va-copy`，VP8 → `nvdec-copy`，MPEG-2/MPEG
 
 ### 16.1 决定
 
-绿色包 + 安装脚本，**不做 MSIX**。完整论证、备选方案与重新评估的触发条件见
-`docs/packaging.md`。
+两条渠道并存，共用同一套 App/Service/libmpv 产物，**服务都是 UI 在用户会话里拉起的后台子进程**：
+
+| 渠道 | 安装方式 | 服务如何运行 |
+| --- | --- | --- |
+| 绿色包 | `install.ps1` 装到 `%ProgramFiles%\DlnRenderer`（管理员） | UI 拉起；托盘「退出应用」时停；关窗后继续运行 |
+| MSIX（用户级） | `winapp cert install`（一次性）+ `Add-AppxPackage`（当前用户，不提权） | 同上 |
+
+完整论证见 `docs/packaging.md`，MSIX 逐项可行性见 `docs/msix-assessment.md`。
+
+**MSIX 不注册 Windows 服务。** 曾实测 `desktop7:Service`（SCM 托管，`LocalSystem`）：起停、自启、
+卸载清理都正常，但服务落在 **session 0**，没有用户桌面，libmpv 报
+`Failed to create swapchain (0x887a0022)`，投屏没有画面。"投屏出画面"是产品的核心，所以放弃；
+同时 `windows.service` 需要机器级受限能力（`packagedServices` / `localSystemServices`），
+与"用户级 MSIX"互斥。`build-msix.ps1` 的解包回验会断言清单里**没有**这些声明。
 
 ### 16.2 进程拓扑（安装后）
 
 ```text
-%ProgramFiles%\DlnRenderer\
+<安装目录>\                    绿色包: %ProgramFiles%\DlnRenderer\
+│                              MSIX:   %ProgramFiles%\WindowsApps\DlnRenderer_<版本>_x64__<发布者ID>\
 ├── DlnRenderer.exe            WinUI 3 UI：窗口、托盘、设置页
 ├── DlnRenderer.Service.exe    后台服务：SSDP、HTTP/SOAP、GENA、libmpv、IPC 服务端
 ├── libmpv-2.dll               只有服务进程加载它
@@ -767,7 +780,22 @@ H.264/VP9/HEVC 10bit/AV1 → `d3d11va-copy`，VP8 → `nvdec-copy`，MPEG-2/MPEG
 ```
 
 UI 启动时按 `ServiceClient.ResolveServicePath()` 的优先级查找服务：**先看自己所在目录**
-（安装后的布局），找不到再回退到开发布局。所以安装后无需额外配置即可拉起服务。
+（安装后的布局），找不到再回退到开发布局。两条渠道因此行为一致，无需额外配置。
+
+两种渠道的差异只在这几处：
+
+| 项 | 绿色包 | MSIX（用户级） |
+| --- | --- | --- |
+| 开机启动 | HKCU Run | 清单 `windows.startupTask`，设置页经 `StartupTask` API 开关（`StartupRegistration` 按是否有包标识分流） |
+| 框架依赖 | 进程自己引导 Windows App Runtime | 清单必须声明 `Microsoft.WindowsAppRuntime.2`，否则 UI 启动即以 `REGDB_E_CLASSNOTREG` 崩溃 |
+| 数据目录 | `%LOCALAPPDATA%\DlnRenderer` | 同左（实测未被虚拟化） |
+| 受限能力 | 无 | `runFullTrust` |
+
+`ServiceStatusReporter`（`StartServiceCtrlDispatcher` + `SERVICE_RUNNING` / `SERVICE_STOPPED` 回报）
+是为 SCM 托管写的；用户级路径上它检测到"不是 SCM 启动"就不介入，但对被 SCM 启动的场景
+（如用户自行 `sc create`）仍然正确，并有 `ServiceLaunchDetectorTests` 覆盖。
+`ServiceLog.DataDirectory` 同理：session 0 才改用 `%ProgramData%`，用户会话走 `%LOCALAPPDATA%`。
+
 
 ### 16.3 端口与防火墙
 

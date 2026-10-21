@@ -42,7 +42,7 @@ dotnet build DlnRenderer.sln -c Debug
 dotnet test DlnRenderer.sln -c Debug
 ```
 
-预期结果（本轮实测）：构建 0 警告 / 0 错误，测试 **391 通过 / 0 失败**（Core 43、Player 20、Dlna 218、Service 110）。
+预期结果（本轮实测）：构建 0 警告 / 0 错误，测试 **403 通过 / 0 失败**（Core 43、Player 23、Dlna 222、Service 115）。
 
 测试分两类：
 
@@ -161,12 +161,13 @@ src/DlnRenderer.App/         WinUI 3 UI（状态展示 + IPC 控制）+ 诊断�
 src/DlnRenderer.Core/        领域模型、播放状态机、IMediaPlayer、IPC 契约
 src/DlnRenderer.Dlna/        SSDP、HTTP、SOAP、AVTransport、ConnectionManager、DIDL、UpnpTime
 src/DlnRenderer.Player/      libmpv 互操作、状态映射、Win32 视频子窗口
-src/DlnRenderer.Service/     后台服务：RendererSession、VideoPresenter、IpcServer、Program
+src/DlnRenderer.Service/     后台服务：RendererSession、VideoPresenter、IpcServer、ServiceStatusReporter、Program
 tests/DlnRenderer.Core.Tests/
 tests/DlnRenderer.Player.Tests/    含 13 KB 视频夹具 Media/sample-video.mp4
 tests/DlnRenderer.Dlna.Tests/
 tests/DlnRenderer.Service.Tests/
 tools/control-point/         ssdp-discover / renderer-check / ipc-check / media-server / capture-window
+tools/package/               build-dist / install / uninstall / firewall-rules / build-msix / verify-service
 scripts/fetch-libmpv.ps1
 docs/
 ```

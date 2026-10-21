@@ -1,69 +1,108 @@
-# 分发形式决策（阶段 E / E1）
+# 分发形式决策（阶段 E / E1 / E2）
 
-状态：**已决定，已实现，本机已验证**（2026-10-21）。
+状态：**两条渠道并存，均已在本机验证**（2026-10-22）。MSIX 是**用户级**包，不注册 Windows 服务。
+
+| 渠道 | 产物 | 安装方式 | 服务如何运行 | 状态 |
+| --- | --- | --- | --- | --- |
+| 绿色包 | `dist/DlnRenderer/` 文件夹 + `install.ps1` | 复制到 `%ProgramFiles%\DlnRenderer`（管理员） | UI 在用户会话里拉起 `DlnRenderer.Service.exe` | 已验证 |
+| MSIX（用户级） | `dist/msix/DlnRenderer-x64.msix` | `winapp cert install`（一次性，管理员）+ `Add-AppxPackage`（**当前用户，无需提权**） | 同上：UI 在用户会话里拉起服务 | 已验证（见 §6） |
+
+两条渠道共用同一套 App/Service/libmpv 产物，区别只在"怎么摆文件、怎么安装、怎么卸载"。
 
 ## 1. 决定
 
-**绿色包 + 安装脚本**：`tools/package/build-dist.ps1` 产出一个自包含文件夹
-（`DlnRenderer.exe` + `DlnRenderer.Service.exe` + `libmpv-2.dll` + WinUI 依赖），
-`tools/package/install.ps1` 把它装到 `%ProgramFiles%\DlnRenderer` 并补上防火墙规则、
-快捷方式与开机启动项，`tools/package/uninstall.ps1` 成对清理。
+**MSIX 是用户级包，服务不由 SCM 托管。** 这是实测后改变的结论，原因见 §2。
 
-**不做 MSIX。** 这不是"暂时不做"，而是有明确理由的选择；条件变化时用 §5 的触发条件重新评估。
+- 绿色包：`tools/package/install.ps1` 装到 `%ProgramFiles%\DlnRenderer`，补防火墙规则、
+  快捷方式与 HKCU Run 开机启动项，`tools/package/uninstall.ps1` 成对清理。
+- MSIX：`tools/package/build-msix.ps1` 出包并签名；安装是 `winapp cert install` +
+  `Add-AppxPackage`，卸载走系统"设置 → 应用"。开机启动走清单里的 `windows.startupTask`，
+  由设置页通过 `StartupTask` API 开关。
 
-## 2. 为什么不是 MSIX
+## 2. 为什么不用 `windows.service`（实测教训）
 
-决定性因素是本项目的核心架构约束：**后台服务必须在 UI 退出后继续运行**。
+上一版把服务注册成 SCM 托管的打包服务（`desktop7:Service`，`LocalSystem`）。服务的起停、
+自启、卸载清理都验证通过，**但投屏没有画面**：
 
-| 约束 | MSIX 下的情况 |
+```
+mpv fatal: Failed to create swapchain: ... (0x887a0022)
+mpv error: Failed initializing any suitable GPU context!
+player status Error ... no audio or video data played
+```
+
+SCM 托管的服务运行在 **session 0**，那里没有用户桌面，GPU 交换链建不出来，mpv 无法输出视频。
+本产品的核心用途就是"投屏出画面"，所以这条路在当前架构下不成立。
+
+另一个事实：用户级包（`Add-AppxPackage` 不提权）**不能**注册 `windows.service`——该扩展需要
+受限能力 `packagedServices` / `localSystemServices`，属于机器级部署。想要"用户级 MSIX"就必须放弃它。
+
+改成用户级后的收益：
+
+| 项 | 用户级 MSIX |
 | --- | --- |
-| 服务进程常驻 | 打包应用可以启动 `runFullTrust` 子进程，但子进程的存活周期、桌面会话归属与"用户注销/重登"行为与普通进程不同，本项目**未验证** |
-| 防火墙规则 | 打包应用的网络能力由 manifest 声明，而入站 UDP 1900 / TCP 端口需要管理员权限的防火墙规则；MSIX 无法在安装时可靠添加自定义入站规则 |
-| libmpv 分发 | GPL-2.0-or-later（见 [licenses.md](licenses.md)）。MSIX 的 `PackageIntegrity` 会校验包内文件，用户替换 DLL（LGPL/GPL 再分发义务）与包完整性校验直接冲突 |
-| 开机启动 | `StartupTask` 只对打包应用可用；本项目 UI 注册的是 HKCU Run（`StartupRegistration`），两种机制并存会增加测试面 |
-| 服务独立启动 | 用户可能只启动 `DlnRenderer.Service.exe`（无 UI）。绿色包天然支持；MSIX 下需要 full-trust 启动器绕一圈 |
+| 视频窗口 | ✅ 服务在用户会话（session 1）里，窗口、GPU、全屏置顶都和绿色包一致 |
+| 数据目录 | ✅ `%LOCALAPPDATA%\DlnRenderer`，无需 ProgramData、无需 ACL |
+| 安装权限 | ✅ 安装包本身不需要管理员（只有首次信任开发证书需要） |
+| 卸载 | ✅ 系统卸载即可 |
+| 需要的受限能力 | 仅 `runFullTrust` |
 
-另一个现实原因：`Package.appxmanifest` 的 `Publisher` 仍是模板占位值 `CN=AppPublisher`，
-真实的 Publisher DN 需要代码签名证书才能确定（阶段 F5），在证书就位前做 MSIX 等于把
-签名问题提前变成阻塞项。
+代价：服务不再"开机即在"，而是随用户登录（`windows.startupTask`）或手动打开 UI 才起来。
+这与绿色包一致，也是 AGENTS.md §4 对首版的要求（普通后台子进程，不装 Windows Service）。
 
-## 3. 为什么不做"自解压 exe / 安装器"
-
-同一目标的更重方案（Inno Setup、WiX、MSI）能提供"添加或删除程序"入口，但：
-
-- 首个可分发版本的目标用户是个人用户，一个 `install.ps1` 加一份说明已经够用；
-- 安装器本身是新的构建与签名依赖，会把阶段 E 的验证面从"文件夹+脚本"扩大到"安装器行为"；
-- 阶段 F5 拿到代码签名证书后，如果需要"添加或删除程序"条目，再升级到 MSI/WiX，
-  改动集中在打包脚本，不影响产品代码。
-
-如果后续需要，`packaging/` 的目录约定与卸载逻辑（`uninstall.ps1`）可以整体复用。
-
-## 4. 实际交付物
+## 3. 实际交付物
 
 | 文件 | 作用 |
 | --- | --- |
-| `tools/package/build-dist.ps1` | 发布 App 与 Service（Release, win-x64, 框架依赖），复制 libmpv 与 Assets，并**校验产物完整性**（缺 exe / 缺 native DLL / 缺图标即失败） |
-| `tools/package/install.ps1` | 停旧实例 → 复制到 `%ProgramFiles%\DlnRenderer` → 添加防火墙规则 → 注册开机启动 → 创建快捷方式 |
-| `tools/package/stop-service.ps1` | 通过 IPC `Shutdown` 干净停止服务（与 WinUI 托盘"退出应用"同一条路径） |
-| `tools/package/firewall-rules.ps1` | `-Action Add` / `-Action Remove`：UDP 1900（SSDP）+ TCP 18090（描述/SOAP/GENA），限定在专用/域网络 |
-| `tools/package/uninstall.ps1` | 停进程 → 删防火墙规则 → 删数据目录 → （可选）删快捷方式与开机启动 → 删安装目录 |
+| `tools/package/build-dist.ps1` | 绿色包：发布 App/Service，复制 libmpv 与 Assets，并校验产物完整性 |
+| `tools/package/build-msix.ps1` | MSIX：先发布 Service 再发布 App 到同一暂存目录 → 复制 libmpv 与 Assets → `winapp package` + 签名 → **解包回验** |
+| `tools/package/verify-service.ps1` | MSIX 体检：包已装、**无 SCM 服务**、清单含运行时依赖、UI 启动且不崩溃、服务在**用户会话**（非 session 0）、`description.xml` 可达 |
+| `tools/package/install.ps1` / `uninstall.ps1` | 绿色包安装/卸载 |
+| `tools/package/stop-service.ps1` | 通过 IPC `Shutdown` 干净停止服务 |
+| `tools/package/firewall-rules.ps1` | UDP 1900（SSDP）+ TCP 18090（描述/SOAP/GENA），限定专用/域网络 |
 
-默认端口 **18090**（`ServiceStartupOptions.DefaultHttpPort`）：固定端口让防火墙规则、
-控制端缓存与书签在重启后依然有效。
+`build-msix.ps1` 的解包回验会断言：清单**没有** `windows.service` / `packagedServices` /
+`localSystemServices`；**有** `Microsoft.WindowsAppRuntime.2` 依赖、`runFullTrust`、`startupTask`；
+包里有两个 exe、`libmpv-2.dll`、`AppIcon.ico`。断言前会先剥掉 XML 注释，避免清单里解释性文字被误匹配。
 
-## 5. 重新评估的触发条件
+## 4. 绿色包与 MSIX 的差异（用户可见）
 
-满足任一条时重新评估 MSIX：
+| 行为 | 绿色包 | MSIX（用户级） |
+| --- | --- | --- |
+| 服务生命周期 | UI 拉起；托盘"退出应用"时停；关窗后继续运行 | 同左 |
+| 开机启动 | HKCU Run | `windows.startupTask`（设置页开关；用户也可在"设置 → 应用 → 启动"改） |
+| 安装 | `install.ps1`（管理员 PowerShell） | `Add-AppxPackage`（当前用户） |
+| 安装位置 | `%ProgramFiles%\DlnRenderer` | `%ProgramFiles%\WindowsApps\...`（受保护，用户不可写） |
+| 升级 | 覆盖文件 | 提高版本号后 `Add-AppxPackage`（**同版本号内容不同会被拒绝**，见 §5） |
+| 数据目录 | `%LOCALAPPDATA%\DlnRenderer` | `%LOCALAPPDATA%\DlnRenderer`（未被虚拟化） |
+| 卸载 | `uninstall.ps1` | "设置 → 应用 → 卸载" |
 
-1. 需要进入 Microsoft Store（Store 只收 MSIX/MSIXbundle）。
-2. 需要 per-machine 安装与"添加或删除程序"条目（用户明确要求）。
-3. 阶段 F 结论采用 LGPL 构建且用户替换 DLL 成为分发要求——这条反而会**进一步排除** MSIX
-   （包完整性校验与可替换 DLL 冲突），所以更可能导向"绿色包 + zip"。
+## 5. 已知限制与未验证项
 
-## 6. 已知限制
+- **防火墙入站规则仍需单独添加。** manifest 的 `internetClientServer` / `privateNetworkClientServer`
+  不创建防火墙规则。绿色包由 `firewall-rules.ps1` 补；MSIX 渠道**没有**安装期钩子能提权加规则，
+  需要用户手动运行 `firewall-rules.ps1`，或在首次运行时由 UI 引导（**未实现**）。
+- **同版本号重装会被拒绝**（`0x80073CFB`）。开发期重打包需先 `Remove-AppxPackage` 再安装；
+  发布时必须递增版本号。
+- **依赖的 Windows App Runtime 必须已安装。** 清单声明了对 `Microsoft.WindowsAppRuntime.2 ≥ 2.5.1`
+  的框架依赖；缺失时 `Add-AppxPackage` 会失败而不是装完再崩。干净机器上的行为**未验证**。
+- **服务不再开机即起**，只在用户登录后（启用开机启动时）或手动打开 UI 后可用。
+- **MSIX 下"开机启动"未做重启实测。** `StartupTask` 的 API 路径编译通过，但没有真正注销/重启验证。
+- **正式代码签名。** 当前是 `winapp cert generate` 的 dev 证书；分发给其他机器需要 CA 证书（阶段 F5）。
+- 只测了 x64；没有 ARM64/x86 的 libmpv 构建（见 [licenses.md](licenses.md)）。
 
-- 只测了 x64；`Platforms` 里声明了 x86/ARM64，但没有对应 libmpv 构建（见 licenses.md）。
-- `install.ps1` 与 `uninstall.ps1` 需要管理员 PowerShell（Program Files 与防火墙规则）。
-  绿色包本身不需要：把 `dist/DlnRenderer` 复制到任意位置即可运行。
-- 没有"添加或删除程序"条目，卸载靠 `uninstall.ps1`。
-- 安装/升级/卸载的完整三步验证记录见 [testing.md](testing.md) §10。
+## 6. 用户级 MSIX 验证记录（2026-10-22）
+
+| 检查项 | 结果 |
+| --- | --- |
+| 清单无 SCM 服务、含运行时依赖/`runFullTrust`/`startupTask` | ✅ `build-msix.ps1` 解包回验通过 |
+| `Add-AppxPackage`（当前用户，无提权）安装 | ✅ `Status: Ok`，`Get-Service DlnRenderer.Service` 无结果 |
+| UI 启动且不崩溃 | ✅ session 1，响应正常，窗口句柄有效，无 Application 1000 崩溃事件 |
+| 服务由 UI 拉起，运行在用户会话 | ✅ `DlnRenderer.Service` session 1 |
+| 日志与状态目录 | ✅ `C:\Users\jaign\AppData\Local\DlnRenderer\logs\`，日志标注 `launch: interactive/ui` |
+| 视频窗口创建 | ✅ `video surface created (hwnd …)`，投送时 `video presenter fullscreen/hidden` 切换 |
+| 真实控制端（192.168.1.72）发现 → 取描述/SCPD → 订阅 → `SetAVTransportURI` → `Play` | ✅ 日志完整 |
+| 投送期间 mpv 错误（swapchain / GPU context） | ✅ **无**（上一版 session 0 下每次必现） |
+| `description.xml` → 200，含 `AVTransport` | ✅ |
+
+> 未覆盖：画面是否真的显示在屏幕上我没有做截图确认，只确认了窗口创建、presenter 切换和播放状态为
+> `Playing`、无 mpv 报错。需要你目视确认一次。

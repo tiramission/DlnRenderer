@@ -37,22 +37,85 @@ internal static class Program
             }
         }
 
+        // When the SCM starts this process (a service registered by hand with `sc create`; the
+        // shipped MSIX package deliberately registers none) it expects a SERVICE_RUNNING report
+        // within 30 seconds and then owns the stop decision. Without that
+        // report the SCM logs event 7009 and marks the service failed while it is in fact serving
+        // requests - "looks broken but works", which is the worst state to ship.
+        //
+        // StartServiceCtrlDispatcher calls the ServiceMain callback on THIS thread and only returns
+        // when the SCM asks the service to stop. So the renderer has to be started from inside that
+        // callback, and everything it needs is captured in the closure below.
+        ServiceStatusReporter? scm = null;
+        Task? renderer = null;
+
+        void RunService()
+        {
+            // The dispatcher thread must return to the SCM promptly, so the renderer runs as a
+            // detached task and reports its own status once it is listening.
+            renderer = RunRendererAsync(options, log, shutdown, scm!, RequestShutdown);
+        }
+
+        scm = new ServiceStatusReporter(log, RunService, () => RequestShutdown("service control manager"));
+
         Console.CancelKeyPress += (_, eventArgs) =>
         {
             eventArgs.Cancel = true;
             RequestShutdown("ctrl+c");
         };
 
+        // Blocks for the lifetime of the service when the SCM started us, and returns immediately
+        // otherwise. Note that a return does NOT mean "stop requested": the dispatcher returns as
+        // soon as ServiceMain does, which is right after the renderer has been handed off. The
+        // renderer task itself is what has to be awaited before the process may exit.
+        scm.ConnectAndWait();
+
+        if (renderer is null)
+        {
+            // No SCM: the UI or a developer's shell started us, so run in the foreground exactly
+            // as this console app always has.
+            renderer = RunRendererAsync(options, log, shutdown, scm, RequestShutdown);
+        }
+
+        try
+        {
+            await renderer.ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // RunRendererAsync already logs and swallows its own failures; reaching here means
+            // something escaped it, which must not take the process down silently.
+            log.Write($"renderer task failed: {ex}");
+            Console.Error.WriteLine($"DlnRenderer.Service failed: {ex.Message}");
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Startup, wait-for-shutdown and teardown. Shared by the SCM path and the console path so the
+    /// two cannot drift apart: only who drives them differs.
+    /// </summary>
+    private static async Task RunRendererAsync(
+        ServiceStartupOptions options,
+        ServiceLog log,
+        TaskCompletionSource shutdown,
+        ServiceStatusReporter scm,
+        Action<string> requestShutdown)
+    {
         // Null until each stage succeeds, so teardown only disposes what was actually created.
         var running = new RunningComponents();
 
         try
         {
-            await StartAsync(options, log, running, RequestShutdown).ConfigureAwait(false);
+            await StartAsync(options, log, running, requestShutdown).ConfigureAwait(false);
+
+            // Everything is listening now, so the start is a success as far as the SCM is concerned.
+            scm.ReportRunning();
 
             if (options.ExitAfter is { } exitAfter)
             {
-                _ = Task.Delay(exitAfter).ContinueWith(_ => RequestShutdown("--exit-after"), TaskScheduler.Default);
+                _ = Task.Delay(exitAfter).ContinueWith(_ => requestShutdown("--exit-after"), TaskScheduler.Default);
             }
 
             await shutdown.Task.ConfigureAwait(false);
@@ -62,18 +125,24 @@ internal static class Program
         {
             log.Write($"startup failed: {ex}");
             Console.Error.WriteLine($"DlnRenderer.Service failed to start: {ex.Message}");
-            return 1;
         }
         finally
         {
+            // The terminal status has to reach the SCM before the slow part of teardown: reporting
+            // SERVICE_STOPPED is what lets StartServiceCtrlDispatcher return, and waiting until
+            // after the player has been disposed would leave the service in STOP_PENDING for as
+            // long as disposal takes.
+            scm.ReportStopped();
+            scm.ReportServiceStopped();
+
             // Reverse of startup order: stop accepting commands, then discovery, then playback,
             // then the video surface the player was drawing into.
             await running.DisposeAsync().ConfigureAwait(false);
+            scm.Dispose();
             log.Write("service stopped");
         }
-
-        return 0;
     }
+
 
     /// <summary>
     /// Creates the video surface, player, DLNA host and IPC server, and publishes the endpoints.
@@ -92,6 +161,9 @@ internal static class Program
         DeviceIdentity.Save(ServicePaths.DeviceStateFile, uuid, options.FriendlyName);
 
         log.Write($"service starting (pid {Environment.ProcessId}, udn uuid:{uuid:D})");
+        log.Write(
+            $"launch: {(options.LaunchedByServiceControlManager ? "service control manager" : "interactive/ui")}, " +
+            $"state directory {ServicePaths.DataDirectory}");
         log.Write($"settings: device name '{options.FriendlyName}', hwdec={options.HardwareDecoding}");
 
         var presenter = await VideoPresenter.StartAsync().ConfigureAwait(false);
@@ -222,9 +294,20 @@ internal sealed record ServiceStartupOptions
 {
     public const string Usage =
         "Usage: DlnRenderer.Service [--http-port N] [--no-ssdp] [--device-name NAME] " +
-        "[--listen-address IP] [--log PATH] [--exit-after SECONDS] [--no-hwdec]";
+        "[--listen-address IP] [--log PATH] [--exit-after SECONDS] [--no-hwdec] [--service]";
 
     public string FriendlyName { get; init; } = RendererSettings.DefaultDeviceName;
+
+    /// <summary>
+    /// True when started by the Service Control Manager rather than by the UI or a developer's
+    /// shell.
+    /// </summary>
+    /// <remarks>
+    /// Behaviour is the same in both modes; the flag only makes the launch path visible in the log,
+    /// which matters when diagnosing why state landed in <c>%ProgramData%</c> instead of the user
+    /// profile (see <see cref="ServicePaths"/>).
+    /// </remarks>
+    public bool LaunchedByServiceControlManager { get; init; }
 
     /// <summary>True when <c>--device-name</c> was supplied, so settings must not override it.</summary>
     public bool DeviceNameSpecified { get; init; }
@@ -312,6 +395,14 @@ internal sealed record ServiceStartupOptions
 
         switch (argument)
         {
+            case "--service":
+                // Not passed by the shipped package (the MSIX channel is per-user and registers no
+                // service). Kept for a service registered by hand with `sc create`: the flag makes
+                // the launch path visible in the log and gives a future service-only
+                // behaviour (no console, SCM stop events) a place to hang.
+                updated = current with { LaunchedByServiceControlManager = true };
+                return true;
+
             case "--no-ssdp":
                 updated = current with { Ssdp = false };
                 return true;

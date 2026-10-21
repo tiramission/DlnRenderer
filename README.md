@@ -4,7 +4,9 @@
 
 > 当前状态：**DLNA 投屏链路可用，协议层完整**。设备发现、投屏播放、全屏置顶窗口、
 > GENA 事件订阅与音量/静音控制均已实现，并有自动化测试覆盖。
-> **但尚未达到可对外分发的状态**：没有安装包、开机启动未实测、libmpv 许可证未定案（见下文）。
+> 分发渠道有两条（绿色包 + 用户级 MSIX），安装/升级/卸载与 MSIX 下的投送链路已在本机实测；
+> **但尚未达到可对外分发的状态**：干净机器未验证、libmpv 许可证未定案、
+> 未代码签名（见下文）。
 
 ## 已实现
 
@@ -41,31 +43,44 @@
 
 ```text
 dotnet test DlnRenderer.sln -c Debug
-# 398 通过 / 0 失败 / 0 跳过
-# Core 43、Player 23、Dlna 222、Service 110
+# 403 通过 / 0 失败 / 0 跳过
+# Core 43、Player 23、Dlna 222、Service 115
 ```
 
 协议层另有真实服务端到端脚本，见 `tools/control-point/`；
 媒体兼容性实测见 `tools/media-compat/`；安装/卸载脚本见 `tools/package/`。
 
+### 打包
+
+```powershell
+pwsh tools/package/build-dist.ps1   # 绿色包 → dist/DlnRenderer
+pwsh tools/package/build-msix.ps1   # MSIX → dist/msix/DlnRenderer-x64.msix
+```
+
+两条渠道共用同一套发布产物。MSIX 需要 `winapp` CLI 与 Windows Kits 的 `makeappx.exe`
+（用于打包后解包回验）。安装 MSIX 前需一次性信任 dev 证书（需管理员）：
+`winapp cert install tools/package/devcert.pfx`。渠道差异见 [docs/packaging.md](docs/packaging.md)。
+
 ## 尚未实现
 
 | 项 | 说明 |
 | --- | --- |
-| **开机启动** | 设置页开关与安装脚本都写 HKCU Run；安装形态下已实测（阶段 E），但"登录后自动启动并可直接投屏"未做完整重启验证 |
-| **安装包** | 有绿色包 + 安装脚本（`tools/package/`，见 [docs/packaging.md](docs/packaging.md)），但**未经干净机器验证**，且未代码签名；`Package.appxmanifest` 的 Publisher 仍是模板占位值 |
+| **开机启动** | 设置页开关已接入：未打包走 HKCU Run（安装形态已实测，阶段 E），打包（MSIX）走 `StartupTask` API（仅验证到编译，**未做注销/重启实测**）；"登录后自动启动并可直接投屏"尚未做完整重启验证 |
+| **安装包** | 有绿色包 + 安装脚本与**用户级 MSIX 包**（`tools/package/`，见 [docs/packaging.md](docs/packaging.md)）。MSIX 以当前用户安装、不注册 Windows 服务，服务由 UI 在用户会话里拉起；**均未经干净机器验证、未代码签名**，MSIX 的开机启动（`StartupTask`）未做重启实测，`Package.appxmanifest` 的 Publisher 仍是 dev 证书值 |
 | **字幕与多音轨** | 播放器层无字幕加载与音轨选择接口 |
 | **播放队列** | 单媒体模型，`NextURI` 恒为空 |
-| **网络接口变化** | 拔插网线或切换 Wi-Fi 后不会重新加入多播组，需要重启服务 |
-| **日志轮换** | 服务日志无保留策略 |
+| **网络接口变化的真实拔插验证** | 已监听 `NetworkAddressChanged` 并增量增删组播成员（单元测试覆盖），但没有真实拔插网线/切换 Wi-Fi 的验证记录 |
+| **MSIX 渠道的防火墙入站规则** | 清单能力不创建防火墙规则，用户级安装也没有提权钩子；需手动运行 `tools/package/firewall-rules.ps1`，UI 引导未实现 |
 
 ## 已知限制
 
 - **只支持 x64**：libmpv 二进制仅提供 x64，ARM64 未验证。
 - **只在 Windows 11 build 26300 实测**：`TargetPlatformMinVersion` 声明为 17763（Windows 10 1809），
   但 Windows 10 未实测。
-- **真实第三方控制端未完成本轮回归**：GENA 与 RenderingControl 只有自动化与本机回调验证，
-  从未被真实客户端订阅或调用。详见 [docs/testing.md](docs/testing.md) §5.3。
+- **真实控制端的事件订阅仍未通过**：真实客户端能发现、取描述/SCPD、投送、暂停、Seek、停止
+  （[docs/testing.md](docs/testing.md) §7.2），但 `SUBSCRIBE` 被接受后初始 `NOTIFY` 返回 HTTP 412 /
+  超时，没有任何一次 2xx；音量/静音也没有真实客户端调用记录。GENA 目前只有本机回调与
+  `verify-eventing.ps1`（22 项）的验证。
 - **手机「系统投屏」不适用**：控制中心里的投屏通常是 Miracast/Wi-Fi Direct，与 DLNA 无关。
   DLNA 投送请用视频 App 内置的「投屏」或 BubbleUPnP 这类控制端。
 
@@ -154,6 +169,8 @@ docs/                       架构、开发、测试与许可证文档
 - [docs/architecture.md](docs/architecture.md) —— 架构决策记录与已知限制
 - [docs/development.md](docs/development.md) —— 开发步骤
 - [docs/testing.md](docs/testing.md) —— 自动化测试与真实设备验收记录
+- [docs/packaging.md](docs/packaging.md) —— 分发渠道决策与两条渠道的差异
+- [docs/msix-assessment.md](docs/msix-assessment.md) —— MSIX 逐项可行性评估
 - [docs/licenses.md](docs/licenses.md) —— 依赖与许可证清单
 
 ## 许可证

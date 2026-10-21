@@ -40,12 +40,68 @@
     <Content Include="Assets\Wide310x150Logo.scale-200.png" />
   </ItemGroup>
 
+  <!--
+    The MSIX channel needs the same assets as loose files on disk, not only as PRI resources.
+    WinUI resolves Assets/AppIcon.ico for the window and title-bar icons, and the tray icon loads
+    it directly from AppContext.BaseDirectory - a packaged app whose install folder lacks the .ico
+    silently falls back to a stock system icon. Content items are compiled into the PRI but are
+    NOT copied to the publish output, which is what 'winapp package' consumes, so they are
+    duplicated here as None+CopyToOutputDirectory. Publish output and package then agree.
+  -->
+  <ItemGroup Condition="'$(EnableMsixTooling)' == 'true'">
+    <None Include="Assets\**\*.png"
+          CopyToOutputDirectory="PreserveNewest"
+          Link="Assets\%(RecursiveDir)%(Filename)%(Extension)" />
+    <None Include="Assets\**\*.ico"
+          CopyToOutputDirectory="PreserveNewest"
+          Link="Assets\%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
   <ItemGroup>
     <Manifest Include="$(ApplicationManifest)" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\DlnRenderer.Core\DlnRenderer.Core.csproj" />
+  </ItemGroup>
+
+  <!--
+    The MSIX package carries the renderer service as well as the UI, because the packaged app
+    launches it from its own install folder - the same user-session child process the portable
+    build uses (see docs/architecture.md 16.1 for why it is not a Windows service) - so the
+    package needs that binary plus libmpv inside it.
+
+    These are file copies, not a ProjectReference, for two reasons:
+      1. A ProjectReference would make the App depend on the Service assembly, but the two have
+         incompatible packaging settings - the win-x64 publish profile sets SelfContained=true
+         for the App while the Service publishes framework-dependent - which fails the build
+         with NETSDK1150.
+      2. There is no code reason for the coupling: the App talks to the service over the named
+         pipe and resolves its path at runtime (ServiceClient.ResolveServicePath), so it never
+         needs the Service types.
+
+    The copies land in the build output but NOT in the publish output (the WinUI packaging
+    pipeline computes its own file list), which is fine: build-msix.ps1 publishes the Service
+    first, then copies both files into the staging directory before 'winapp package' runs, and
+    then asserts they are inside the .msix. The build-output copies keep 'winapp run' and the
+    IDE's F5 working, which resolve the service next to the UI exe.
+  -->
+  <ItemGroup Condition="'$(EnableMsixTooling)' == 'true'">
+    <None Include="..\DlnRenderer.Service\bin\$(Configuration)\net10.0-windows\win-$(Platform)\DlnRenderer.Service.exe"
+          Condition="Exists('..\DlnRenderer.Service\bin\$(Configuration)\net10.0-windows\win-$(Platform)\DlnRenderer.Service.exe')"
+          CopyToOutputDirectory="PreserveNewest"
+          Link="DlnRenderer.Service.exe" />
+  </ItemGroup>
+
+  <!--
+    Service binary and its native dependency, shipped in the package root next to the UI exe so
+    ServiceClient.ResolveServicePath() finds the service beside itself without extra configuration.
+  -->
+  <ItemGroup>
+    <None Include="..\DlnRenderer.Player\native\x64\libmpv-2.dll"
+          Condition="Exists('..\DlnRenderer.Player\native\x64\libmpv-2.dll')"
+          CopyToOutputDirectory="PreserveNewest"
+          Link="libmpv-2.dll" />
   </ItemGroup>
 
   <!--

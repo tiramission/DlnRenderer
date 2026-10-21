@@ -106,7 +106,9 @@ public sealed class SettingsViewModel : ObservableObject
                 return;
             }
 
-            if (!StartupRegistration.TryApply(settings.StartWithWindows, Environment.ProcessPath, out var startupError))
+            var (startupOk, startupError) = await StartupRegistration
+                .ApplyAsync(settings.StartWithWindows, Environment.ProcessPath);
+            if (!startupOk)
             {
                 Show(startupError ?? "无法修改开机启动设置。", isError: true);
                 return;
@@ -127,8 +129,6 @@ public sealed class SettingsViewModel : ObservableObject
         {
             Busy = false;
         }
-
-        await Task.CompletedTask;
     }
 
     /// <summary>Stops and starts the service so the saved settings take effect.</summary>
