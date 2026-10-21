@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text;
 
@@ -45,6 +46,12 @@ public sealed class SsdpServer : IAsyncDisposable
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> _recentSearches = new();
 
     private readonly List<IPAddress> _joinedInterfaces = [];
+
+    /// <summary>Serialises membership changes between startup, network events and disposal.</summary>
+    private readonly object _membershipGate = new();
+
+    /// <summary>True while a queued network change is being applied, so a burst collapses into one run.</summary>
+    private bool _pendingNetworkChange;
 
     private Socket? _socket;
     private Task? _receiveLoop;
@@ -96,23 +103,7 @@ public sealed class SsdpServer : IAsyncDisposable
                 "Another renderer may be running on this machine.", ex);
         }
 
-        var failures = new List<string>();
-        foreach (var address in addresses)
-        {
-            try
-            {
-                socket.SetSocketOption(
-                    SocketOptionLevel.IP,
-                    SocketOptionName.AddMembership,
-                    new MulticastOption(multicast, address));
-                _joinedInterfaces.Add(address);
-            }
-            catch (SocketException ex)
-            {
-                failures.Add($"{address}: {ex.SocketErrorCode}");
-            }
-        }
-
+        var failures = JoinOn(socket, addresses);
         if (_joinedInterfaces.Count == 0)
         {
             socket.Dispose();
@@ -132,6 +123,12 @@ public sealed class SsdpServer : IAsyncDisposable
         SendNotifications(alive: true);
         _receiveLoop = Task.Run(() => ReceiveLoopAsync(socket, _cts.Token));
         _aliveLoop = Task.Run(AliveLoopAsync);
+
+        // A laptop that switches from Wi-Fi to Ethernet, or a cable that is unplugged and plugged
+        // back in, keeps the wildcard socket alive but loses the multicast group on the interface
+        // that changed. Without this subscription the renderer silently stops being discoverable
+        // until the service is restarted.
+        NetworkChange.NetworkAddressChanged += OnNetworkAddressChanged;
     }
 
     public async ValueTask DisposeAsync()
@@ -156,22 +153,12 @@ public sealed class SsdpServer : IAsyncDisposable
 
         await _cts.CancelAsync().ConfigureAwait(false);
 
-        var multicast = IPAddress.Parse(SsdpConstants.MulticastAddress);
+        NetworkChange.NetworkAddressChanged -= OnNetworkAddressChanged;
+
         if (_socket is not null)
         {
-            foreach (var address in _joinedInterfaces)
-            {
-                try
-                {
-                    _socket.SetSocketOption(
-                        SocketOptionLevel.IP,
-                        SocketOptionName.DropMembership,
-                        new MulticastOption(multicast, address));
-                }
-                catch (SocketException)
-                {
-                }
-            }
+            LeaveOn(_socket, _joinedInterfaces);
+            _joinedInterfaces.Clear();
 
             try
             {
@@ -413,6 +400,164 @@ public sealed class SsdpServer : IAsyncDisposable
     {
         var address = NetworkInterfaces.SelectSourceAddressFor(requester, _joinedInterfaces);
         return address ?? (_joinedInterfaces.Count > 0 ? _joinedInterfaces[0] : IPAddress.Any);
+    }
+
+    /// <summary>
+    /// Adds this socket to the SSDP group on every address, recording which joins succeeded.
+    /// </summary>
+    /// <remarks>
+    /// A failure on one interface is not fatal: a machine with a Hyper-V or VPN adapter commonly
+    /// cannot join on that adapter while the physical NIC works fine.
+    /// </remarks>
+    private List<string> JoinOn(Socket socket, IReadOnlyList<IPAddress> addresses)
+    {
+        var multicast = IPAddress.Parse(SsdpConstants.MulticastAddress);
+        var failures = new List<string>();
+
+        foreach (var address in addresses)
+        {
+            if (_joinedInterfaces.Contains(address))
+            {
+                continue;
+            }
+
+            try
+            {
+                socket.SetSocketOption(
+                    SocketOptionLevel.IP,
+                    SocketOptionName.AddMembership,
+                    new MulticastOption(multicast, address));
+                _joinedInterfaces.Add(address);
+            }
+            catch (SocketException ex)
+            {
+                failures.Add($"{address}: {ex.SocketErrorCode}");
+            }
+        }
+
+        return failures;
+    }
+
+    /// <summary>Removes membership for the given addresses, ignoring ones that were never joined.</summary>
+    private static void LeaveOn(Socket socket, IEnumerable<IPAddress> addresses)
+    {
+        var multicast = IPAddress.Parse(SsdpConstants.MulticastAddress);
+
+        foreach (var address in addresses)
+        {
+            try
+            {
+                socket.SetSocketOption(
+                    SocketOptionLevel.IP,
+                    SocketOptionName.DropMembership,
+                    new MulticastOption(multicast, address));
+            }
+            catch (SocketException)
+            {
+                // The interface may already be gone; dropping it is best effort by definition.
+            }
+        }
+    }
+
+    /// <summary>
+    /// Re-aligns the multicast membership with the interfaces that currently exist.
+    /// </summary>
+    /// <remarks>
+    /// Runs on a thread-pool thread raised by <see cref="NetworkChange"/>, which fires for events
+    /// that do not affect us at all (a VPN adapter coming up, an address being renewed). The work is
+    /// therefore a cheap set comparison, and a no-op when the interface set is unchanged.
+    /// <para>
+    /// The socket is never recreated. Rebuilding it would drop the wildcard bucket that makes
+    /// discovery reliable (§ socket strategy in the type remarks), and membership is per interface,
+    /// so synchronising the set is both sufficient and far less disruptive.
+    /// </para>
+    /// </remarks>
+    private void OnNetworkAddressChanged(object? sender, EventArgs e)
+    {
+        // NetworkChange delivers a burst per adapter reset, and join/leave are not safe to
+        // interleave. Events are queued rather than dropped on contention: a burst is common
+        // enough that dropping one could lose the only notification for a real address change.
+        // Re-reading the live interface set inside the lock makes repeated runs harmless.
+        lock (_membershipGate)
+        {
+            if (!_pendingNetworkChange)
+            {
+                _pendingNetworkChange = true;
+
+                // Hand the work to the thread pool: the event is raised on a system thread that must
+                // not be blocked by socket calls, and TryEnter/Exit must stay on one thread.
+                _ = Task.Run(ProcessNetworkChange);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Applies a queued network change. Runs once per burst, not once per event.
+    /// </summary>
+    private void ProcessNetworkChange()
+    {
+        try
+        {
+            Socket? socket;
+            MembershipDelta delta;
+
+            lock (_membershipGate)
+            {
+                socket = _socket;
+                if (!IsRunning || socket is null)
+                {
+                    return;
+                }
+
+                var current = NetworkInterfaces.GetLanAddresses(_options.ListenAddress);
+                delta = MembershipDelta.Compute(_joinedInterfaces, current);
+            }
+
+            var removed = delta.Removed;
+            if (removed.Count > 0)
+            {
+                LeaveOn(socket, removed);
+                foreach (var address in removed)
+                {
+                    _joinedInterfaces.Remove(address);
+                }
+
+                _log($"ssdp left multicast on {string.Join(", ", removed)}");
+            }
+
+            var added = delta.Added;
+            if (added.Count > 0)
+            {
+                var failures = JoinOn(socket, added);
+                if (failures.Count > 0)
+                {
+                    _log($"ssdp could not rejoin multicast on: {string.Join("; ", failures)}");
+                }
+
+                // Announce immediately so control points learn the new LOCATION without waiting for
+                // the periodic alive interval.
+                SendNotifications(alive: true);
+            }
+
+            if (!delta.HasChanges)
+            {
+                return;
+            }
+
+            _log($"ssdp network change: multicast joined on {string.Join(", ", _joinedInterfaces)}");
+        }
+        catch (Exception ex)
+        {
+            // A failure here must never take down the listener that is still serving requests.
+            _log($"ssdp network change handling failed: {ex.Message}");
+        }
+        finally
+        {
+            lock (_membershipGate)
+            {
+                _pendingNetworkChange = false;
+            }
+        }
     }
 
     /// <summary>Reverses the four bytes of an interface index (host order to network order).</summary>

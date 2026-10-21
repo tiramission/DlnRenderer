@@ -289,14 +289,14 @@ DlnRenderer 是一个 **DLNA Media Renderer（DMR）**：它让手机、平板�
 
 **任务与可交付物**
 
-| # | 任务 | 优先级 | 交付物 |
-| --- | --- | --- | --- |
-| A1 | 重写 `README.md` 的"已实现/尚未实现"，使其与代码一致；删除过时限制 | P1 | 更新后的 `README.md` |
-| A2 | 更新 `docs/architecture.md` 已知限制列表，移除已完成的 GENA/RenderingControl 条目 | P1 | 更新后的架构文档 |
-| A3 | 新增 `THIRD-PARTY-NOTICES` 骨架（内容可先标注"待定"） | P1 | 新文件 |
-| A4 | SSDP 监听 `NetworkAddressChanged`，接口变化时重建多播组成员并重新公告 | P0 | `SsdpServer` 改动 + 回归测试 |
-| A5 | `ServiceLog` 增加按大小轮换与保留份数 | P1 | `ServiceLog` 改动 + 测试 |
-| A6 | 新增"网络恢复"端到端脚本：断开/恢复网络后验证可发现 | P1 | `tools/control-point/verify-network-recovery.ps1` |
+| # | 任务 | 优先级 | 状态 | 交付物 |
+| --- | --- | --- | --- | --- |
+| A1 | 重写 `README.md`，使其与代码一致；删除过时限制 | P1 | 完成 | 更新后的 `README.md` |
+| A2 | 更新 `docs/architecture.md` 已知限制列表 | P1 | 完成（含 514 处乱码修复） | 更新后的架构文档 |
+| A3 | 新增 `THIRD-PARTY-NOTICES` 骨架 | P1 | **未开始** | 新文件 |
+| A4 | SSDP 监听 `NetworkAddressChanged`，同步多播成员并重新公告 | P0 | 完成 | `SsdpServer` + `MembershipDelta` + 9 个测试 |
+| A5 | `ServiceLog` 增加保留策略 | P1 | 完成（按天保留 7 天） | `ServiceLog` + 7 个测试 |
+| A6 | 新增网络恢复验证脚本 | P1 | 完成 | `tools/control-point/verify-network-recovery.ps1` |
 
 **范围边界**：不做托盘、不做安装包、不做字幕。A4 只处理"接口变化后重新加入组播"，
 不实现多网卡优先级策略调整。
@@ -721,3 +721,28 @@ F (许可证) ──────────── 从 A 开始并行 ───�
 6. **验收记录必须带日期与证据**（日志摘录、截图、或测试输出），
    写入 `docs/testing.md`，本文件只引用结论。
 7. **不承诺发布日期**。里程碑用"完成条件"衡量，不用时间衡量。
+
+### A 阶段实施记录（2026-10-21）
+
+**A4 网络变化恢复**
+
+- `SsdpServer` 订阅 `NetworkChange.NetworkAddressChanged`；接口变化时对比当前网卡与已加入的成员，
+  只做增量 join/leave，**不重建 socket** —— 重建会丢掉通配桶，而通配桶正是让发现可靠的关键（§12.3 第 4 条）。
+- 差异计算抽成纯函数 `MembershipDelta.Compute`，9 个单元测试覆盖新增、消失、地址更换、全部断开与幂等性。
+- 事件突发合并为一次处理（`_pendingNetworkChange`），不会因竞争丢弃通知；处理逻辑重新读取实时网卡集合，
+  重复执行天然无害。
+- 验证：真实 `SsdpServer` 反射触发 5 次事件，成员集不变、无异常、清理正常。
+  **真实拔插网线需要管理员权限，未实机验证**，已列入 `docs/testing.md` §6.1 的人工验收项。
+
+**A5 日志保留**
+
+- 按天保留 7 天，启动时与跨天时各清理一次。
+- 只删除 `service-yyyyMMdd.log` 形态的文件，共享目录中的其他文件不受影响。
+- 验证：手动植入 30 天 / 10 天 / 当天 / 无关文件，启动后仅前两者被删除；7 个单元测试覆盖边界与幂等性。
+
+**A6 网络恢复脚本**
+
+- `tools/control-point/verify-network-recovery.ps1`：检查服务进程、读取多播成员、验证描述端点，
+  `-Simulate` 只做稳定态检查，不带参数时执行 `ipconfig /renew` 并观察日志反应。
+
+**仍未完成**：A3（`THIRD-PARTY-NOTICES`）。
