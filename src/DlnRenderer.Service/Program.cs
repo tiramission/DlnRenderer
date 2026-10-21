@@ -57,8 +57,13 @@ internal static class Program
             {
                 VideoWindowHandle = presenter.ChildHandle,
                 HardwareDecoding = options.HardwareDecoding,
-                LogLevel = "warn",
+                LogLevel = Environment.GetEnvironmentVariable("DLN_MPV_LOGLEVEL") ?? "warn",
             });
+
+            // A rejected file is only diagnosable through mpv's own log: the player reports "loading
+            // failed" and Windows does not say why. Forwarding it costs nothing and turns a silent
+            // black screen into a line the user can quote in a bug report.
+            player.LogMessage += (_, message) => log.Write($"mpv {message.Level}: {message.Text}");
             log.Write("libmpv initialised");
 
             var dlnaOptions = new DlnaOptions

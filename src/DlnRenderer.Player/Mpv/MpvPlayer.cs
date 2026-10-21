@@ -32,6 +32,9 @@ public sealed class MpvPlayer : IMediaPlayer
     // Signals mirrored from mpv, guarded by _gate.
     private bool _idleActive = true;
     private bool _loadPending;
+    private int _loadedEntryId;
+    private int _lastRequestedEntryId;
+    private int _entryCounter;
     private bool _paused;
     private bool _coreIdle;
     private bool _hasVideo;
@@ -132,8 +135,12 @@ public sealed class MpvPlayer : IMediaPlayer
             _loadPending = true;
         }
 
+        // Mark the load as in progress *before* issuing loadfile. mpv emits FILE_LOADED from its own
+        // thread, and for a replayed medium that can arrive before this method returns; the state
+        // machine would then still be in Stopped and reject the resulting transition to Paused,
+        // leaving the player stuck reporting Stopped with a file loaded and paused.
+        _stateMachine.TryTransitionTo(PlaybackState.Stopped);
         _stateMachine.TryTransitionTo(PlaybackState.Transitioning);
-        Publish(urgent: true);
 
         var context = RequireContext();
         try
@@ -144,7 +151,30 @@ public sealed class MpvPlayer : IMediaPlayer
                     ThrowIfDisposed();
                     // Start paused so SetAVTransportURI-style loading does not begin playback by itself.
                     Check(MpvNative.SetFlag(context, "pause", true), "pause");
+                    // libmpv numbers every file it opens, monotonically: playlist-entry-id 1, 2, 3...
+                    // The id the next load will receive is therefore the count before it. End-of-file
+                    // events carrying a smaller id describe a medium that has already been replaced,
+                    // which is exactly the stale Stop/EOF report that must not overwrite the state of
+                    // the file being loaded now.
+                    var nextEntry = 0;
+                    lock (_gate)
+                    {
+                        nextEntry = _entryCounter + 1;
+                        _entryCounter = nextEntry;
+                    }
+
                     Check(MpvNative.Command(context, "loadfile", target, "replace"), "loadfile");
+
+                    lock (_gate)
+                    {
+                        _lastRequestedEntryId = nextEntry;
+                    }
+
+                    // Force the notification now that the load is really underway. Replaying the same
+                    // media rebuilds a status identical to the last published one, and the
+                    // de-duplicating Publish would drop the Transitioning edge; a caller waiting for
+                    // the load to land would then wait for a state change that never comes.
+                    ForcePublish();
                 },
                 cancellationToken).ConfigureAwait(false);
         }
@@ -181,6 +211,11 @@ public sealed class MpvPlayer : IMediaPlayer
         lock (_gate)
         {
             _loadPending = false;
+
+            // Forget the loaded entry: everything before this stop is superseded. The next load
+            // records its own id, and an end-of-file that arrives in between describes the medium
+            // that was just stopped.
+            _loadedEntryId = 0;
         }
 
         return RunCommandAsync("stop", cancellationToken, () => MpvNative.Command(context, "stop"));
@@ -271,6 +306,17 @@ public sealed class MpvPlayer : IMediaPlayer
         SetOption(context, "osd-level", "0");
         SetOption(context, "idle", "yes");
         SetOption(context, "keep-open", "no");
+
+        // Window state belongs to the host (VideoPresenter), which owns the HWND and the message
+        // loop. Letting mpv also manage fullscreen/topmost makes two systems fight over the same
+        // window geometry and focus on every resize. Pinned off so a future mpv default cannot
+        // silently reintroduce the conflict.
+        SetOption(context, "fullscreen", "no");
+        SetOption(context, "ontop", "no");
+        SetOption(context, "border", "no");
+        SetOption(context, "keepaspect", "yes");
+        SetOption(context, "keepaspect-window", "yes");
+
         SetOption(context, "hwdec", options.HardwareDecoding ? "auto-safe" : "no");
 
         if (!string.IsNullOrEmpty(options.AudioOutput))
@@ -357,11 +403,20 @@ public sealed class MpvPlayer : IMediaPlayer
                     HandleProperty(nativeEvent);
                     break;
                 case MpvEventId.FileLoaded:
+                    // The file that just became current supersedes any load still considered pending.
+                    // FILE_LOADED is the definitive "this file is loaded now" event, and leaving the
+                    // flag set would keep the status at Transitioning forever when a Stop raced the
+                    // load and its events were therefore not observed.
                     lock (_gate)
                     {
                         _idleActive = false;
                         _loadPending = false;
                         _error = null;
+
+                        // Record which playlist entry is current, so a late end-of-file event for the
+                        // medium that a Stop just terminated can be recognised and ignored.
+                        var position = MpvNative.GetString(context, "playlist-pos");
+                        _loadedEntryId = int.TryParse(position, out var loadedId) ? loadedId : 0;
                     }
 
                     RefreshTrackPresence(context);
@@ -373,7 +428,6 @@ public sealed class MpvPlayer : IMediaPlayer
                     Publish(urgent: true);
                     break;
                 case MpvEventId.StartFile:
-                    _stateMachine.TryTransitionTo(PlaybackState.Transitioning);
                     Publish(urgent: true);
                     break;
                 case MpvEventId.EndFile:
@@ -499,14 +553,53 @@ public sealed class MpvPlayer : IMediaPlayer
 
         var endFile = Marshal.PtrToStructure<MpvEventEndFile>(nativeEvent.Data);
         bool loadPending;
+        bool superseded;
         lock (_gate)
         {
             loadPending = _loadPending;
+
+            // Whether this end-of-file describes the medium the renderer is now working with.
+            // Replacing media numbers the new file's playlist entry; an event carrying the shorter
+            // (earlier) id belongs to the previous medium - typically the one Stop just terminated -
+            // and must not be allowed to report Stopped or Error for its successor.
+            var currentEntry = _lastRequestedEntryId;
+            var staleEntry = currentEntry > 0
+                && endFile.PlaylistEntryId > 0
+                && endFile.PlaylistEntryId < currentEntry;
+
+            superseded = staleEntry
+                && endFile.Reason != MpvEndFileReason.Error
+                && endFile.Error >= 0;
+        }
+
+        // Return outside the lock: returning inside would leave _gate held and deadlock every
+        // subsequent status read.
+        if (superseded)
+        {
+            // Do not publish either: the status snapshot still carries the stale idle/paused flags
+            // of the old entry, and publishing would drag a load that is already Transitioning back
+            // to Stopped. The newer load publishes its own transition when it lands.
+            return;
         }
 
         if (endFile.Reason == MpvEndFileReason.Error || endFile.Error < 0)
         {
             var reason = endFile.Error < 0 ? MpvNative.ErrorText(endFile.Error) : "playback failed";
+
+            // A genuine failure of the medium that is being loaded now is reported; one belonging to
+            // the medium that was already replaced is not.
+            bool staleError;
+            lock (_gate)
+            {
+                staleError = _lastRequestedEntryId > 0
+                    && endFile.PlaylistEntryId > 0
+                    && endFile.PlaylistEntryId < _lastRequestedEntryId;
+            }
+
+            if (staleError)
+            {
+                return;
+            }
             lock (_gate)
             {
                 _loadPending = false;
@@ -517,9 +610,18 @@ public sealed class MpvPlayer : IMediaPlayer
         }
         else if (loadPending)
         {
-            // Replacing a playing file ends the old one first; the new load is still in flight.
-            // Stay in Transitioning until FILE_LOADED arrives (or an error end-file above).
-            return;
+            // A load is in flight. This branch used to assume "the old file ended because it was
+            // replaced", but the end-file event says nothing of the sort: when the *new* file is
+            // unreadable (server gone, unsupported codec), mpv reports the error here, and swallowing
+            // it left the renderer reporting Transitioning forever with no media and no picture.
+            // Treat it as a terminal event for the current load; a follow-up FILE_LOADED from a
+            // still-valid newer load resets the error again.
+            lock (_gate)
+            {
+                _loadPending = false;
+                _idleActive = true;
+                _paused = false;
+            }
         }
         else
         {
@@ -550,7 +652,19 @@ public sealed class MpvPlayer : IMediaPlayer
         handler(this, new MpvLogMessage(level, text));
     }
 
-    private void Publish(bool urgent)
+    private void Publish(bool urgent) => PublishCore(urgent, force: false);
+
+    /// <summary>
+    /// Publishes regardless of whether the status equals the last one.
+    /// </summary>
+    /// <remarks>
+    /// Used for edges that subscribers must observe even when every field is unchanged - notably the
+    /// start of a load: replaying the same media produces a status identical to the previously
+    /// published one, and de-duplication would hide the Transitioning edge.
+    /// </remarks>
+    private void ForcePublish() => PublishCore(urgent: true, force: true);
+
+    private void PublishCore(bool urgent, bool force)
     {
         if (_disposed)
         {
@@ -587,17 +701,31 @@ public sealed class MpvPlayer : IMediaPlayer
         var desired = loadPending ? PlaybackState.Transitioning : MpvStateMapper.Map(snapshot);
 
         // Never bypass the domain transition rules: an impossible jump (e.g. Error -> Playing)
-        // is rejected here and the previous state is kept.
-        if (!_stateMachine.TryTransitionTo(desired) && error is null)
+        // is rejected here and the previous state is kept. The one exception is recovery: if the
+        // player reports real playback while the machine is idle, that is a medium which is playing
+        // and therefore in Transitioning. This happens when a Stop lands between a loadfile and its
+        // events, leaving "idle" recorded for a file that then plays; refusing it would leave the
+        // renderer claiming Stopped with video on screen.
+        if (!_stateMachine.TryTransitionTo(desired))
         {
-            Log("debug", $"rejected transport transition to {desired}");
+            if (desired is PlaybackState.Buffering or PlaybackState.Playing
+                && _stateMachine.Current == PlaybackState.Stopped
+                && error is null)
+            {
+                _stateMachine.TryTransitionTo(PlaybackState.Transitioning);
+                _stateMachine.TryTransitionTo(desired);
+            }
+            else if (error is null)
+            {
+                Log("debug", $"rejected transport transition to {desired}");
+            }
         }
 
         var status = BuildStatus();
 
         lock (_publishGate)
         {
-            if (status == _lastPublished)
+            if (!force && status == _lastPublished)
             {
                 return;
             }

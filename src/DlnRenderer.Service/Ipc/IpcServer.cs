@@ -234,6 +234,8 @@ public sealed class IpcServer : IAsyncDisposable
                     break;
 
                 case IpcCommands.Stop:
+                    // Same effect as DLNA Stop: playback ends, so the overlay comes down. A paused
+                    // cast is deliberately left on screen, see VideoWindowPolicy.
                     await _session.StopAsync(_cts.Token).ConfigureAwait(false);
                     break;
 

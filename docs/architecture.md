@@ -390,3 +390,66 @@ pwsh tools/control-point/validate-description.ps1 -Location "http://<本机LAN�
   本机 WLAN 处于断开状态（仅有以太网），因此该系统功能看不到设备属预期行为，与渲染器无关。
 - GENA 事件订阅仍未实现（`SUBSCRIBE` 返回 501），控制端依靠轮询。
 - 字幕与多音轨选择未实现。
+---
+
+## 13. 投屏窗口：全屏与置顶
+
+### 13.1 职责归属
+
+窗口状态由服务进程独占：`VideoPresenter` 拥有顶层 HWND 与其消息循环，`VideoWindowPolicy` 决定"此刻该不该显示"。
+WinUI 进程完全不参与——UI 关闭后窗口与播放继续工作，这一点由 `SessionWindowLifecycleTests` 与真实服务端到端验证覆盖。
+
+```
+mpv 状态事件 ──► VideoWindowPolicy（纯策略，可测）
+DLNA/IPC 命令 ─►        │
+                        ▼
+              VideoPresenter（自带 STA 线程）
+                 ├─ 显示器选择 FullscreenGeometry（纯几何，可测）
+                 ├─ 窗口放置 SetWindowPos
+                 └─ 置顶 TopmostWindow（唯一权威实现）
+```
+
+### 13.2 决策：mpv 不管理窗口
+
+`fullscreen=no`、`ontop=no`、`border=no` 在初始化时显式固定。
+若同时让 mpv 的 `fullscreen`/`ontop` 生效，两套系统会在每次尺寸变化时争夺同一窗口的几何与焦点。
+**单一权威**：窗口布局只由 `VideoPresenter` 决定，mpv 只负责在给定的 `wid` 子窗口里绘制。
+
+### 13.3 显示策略（`VideoWindowPolicy`）
+
+| 状态 | 窗口 |
+| --- | --- |
+| `SetAVTransportURI`（libmpv 以 paused 打开） | 隐藏——未按播放前不抢占屏幕 |
+| `Play` → Playing / Buffering / Transitioning | 全屏 + 置顶 |
+| 用户 `Pause`（Play 之后） | 保持全屏 + 置顶 |
+| `Seek` / 切换媒体 | 复用同一窗口，状态不变 |
+| `Stop` / 播放自然结束 / 错误 | 隐藏并退出置顶 |
+
+"paused" 的两种含义必须区分：**预加载**（尚未 Play）与**用户暂停**。由 `playbackStarted` 标记区分，仅在 `Play` 置位、`Stop` 清除。
+
+### 13.4 全屏与置顶机制
+
+- **矩形**来自 `EnumDisplayMonitors` 的整块显示器，而非工作区或固定 1920x1080；多显示器按窗口所在显示器选择，未拔插时保持原选择。
+- **样式**：`WS_POPUP`（无标题栏/边框/阴影）+ `WS_EX_TOOLWINDOW`（不进 Alt+Tab，避免出现无法用键盘关掉的条目）。
+- **置顶**：窗口可见之后调用 `SetWindowPos(HWND_TOPMOST)` 并**回读 `WS_EX_TOPMOST` 验证**。
+  对隐藏窗口提前设置该样式会被系统丢弃，这是本轮定位到的真实缺陷。
+- **焦点**：窗口当前不是前台时带 `SWP_NOACTIVATE`，不抢用户焦点；没有任何定时器轮询置顶。
+- **显示器变化**：`MonitorEventsListener` 接收 `WM_DISPLAYCHANGE`/`WM_SETTINGCHANGE`，250 ms 去抖后重算矩形。
+- **退出**：`Escape` 隐藏窗口（回到播放器外层），不影响 AVTransport 状态；其余按键（Alt+Tab、Win）一律交给 `DefWindowProc`。
+- **隐藏**：先退出置顶再 `SW_HIDE` 并缩到 1x1。非前台进程调用 `ShowWindow(SW_HIDE)` 可能只改内部标志而不清屏，缩窗能保证从屏幕上消失。
+
+### 13.5 DPI
+
+应用清单声明 `PerMonitorV2`。这是必需的而非可选：进程未声明 DPI 感知时，2560x1440@150% 的显示器只会报告 1707x960，
+全屏窗口便只覆盖屏幕 2/3。运行时调用无效——.NET 启动阶段已经创建过窗口，Windows 会拒绝之后的感知级别变更。
+
+### 13.6 播放器侧的配套修复
+
+1. 加载入口显式经过 `Stopped -> Transitioning`，并从 `Error` 恢复（状态机唯一合法出口）。
+2. `loadfile` 之后强制发布一次状态：重播同一媒体时状态对象与上次完全相同，去重会吞掉 Transitioning 边沿。
+3. 按 libmpv 的 playlist entry 编号丢弃过期 end-file：Stop 与新加载交错时，旧文件的结束事件不得改写新文件的状态。
+4. `FILE_LOADED` 是"该文件现已加载"的权威事件，同时清除 `loadPending`。
+5. 重载带 3 次有界重试，失败时抛出明确错误（`Play` 不得在无法播放时返回成功）。
+6. 服务把 mpv 日志转发到服务日志：被拒绝的文件从此有可诊断的原因。
+
+上述改动均有回归测试；`SessionWindowLifecycleTests` 专门覆盖快速 Play/Stop/重播序列。

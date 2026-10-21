@@ -8,6 +8,13 @@
     <RootNamespace>DlnRenderer.Service</RootNamespace>
     <AssemblyName>DlnRenderer.Service</AssemblyName>
     <!-- Console host: the service owns no UI framework so it can outlive the WinUI process. -->
+
+    <!--
+      Declares per-monitor-v2 DPI awareness. This must come from the manifest: windows are already
+      created by the time Main runs, after which Windows rejects runtime awareness changes, and a
+      non-aware process sees virtualised monitor rectangles that break fullscreen sizing.
+    -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
 
   <ItemGroup>

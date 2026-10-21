@@ -10,7 +10,9 @@ dotnet build DlnRenderer.sln -c Debug
 dotnet test DlnRenderer.sln -c Debug
 ```
 
-实测结果：**163 通过 / 0 失败，0 跳过**（Core 25、Player 15、Dlna 110、Service 13）。
+实测结果：**249 通过 / 0 失败，0 跳过**（Core 25、Player 15、Dlna 150、Service 59）。
+
+连续 3 次完整运行均为 0 失败（`dotnet test DlnRenderer.sln -c Debug --no-build`）。
 
 ### 1.1 Core（25）
 
@@ -172,3 +174,46 @@ soap action GetTransportInfo from 192.168.1.72   (控制端持续轮询)
   视频 App 或 BubbleUPnP 内的「投屏/渲染器」入口。
 - GENA 事件未实现，控制端靠轮询获取状态。
 - 未做长时间播放与网络中断恢复的压力测试。
+---
+
+## 4. 投屏窗口全屏与置顶（本轮新增）
+
+### 4.1 自动化覆盖
+
+| 测试 | 数量 | 覆盖内容 |
+| --- | --- | --- |
+| `VideoWindowPolicyTests` | 14 | Play 后全屏；Pause/Buffering/Transitioning 保持；Stop/Error 隐藏；**预加载（paused 但未 Play）不占屏**；纯音频不占屏；媒体切换时的陈旧事件不驱动窗口 |
+| `FullscreenGeometryTests` | 11 | 覆盖整块显示器（非工作区）；多显示器负坐标；首选显示器保持；显示器拔出回退；分辨率变化重算；真实桌面至少一个可用显示器 |
+| `VideoPresenterTests` | 12 | 真实 HWND：无标题栏/无边框的 WS_POPUP、`WS_EX_TOPMOST`、`WS_EX_TOOLWINDOW`、矩形等于某块显示器；重复 Show 幂等；Hide 保留 HWND 且退出置顶；并发 Show/Hide 后状态自洽；Dispose 释放 |
+| `SessionWindowLifecycleTests` | 8 | `RendererSession` + 真实 libmpv：Load 不占屏 / Play 占屏并置顶；Pause 保持、Stop 隐藏；播完自动隐藏；切换媒体复用同一 HWND；连续 Play/Stop；加载失败不留空白全屏；Seek/Pause 不掉出置顶；快照与窗口一致 |
+
+窗口相关测试归入 `video-window` collection（`DisableParallelization = true`）：置顶带是桌面级共享资源，并行执行会互相干扰。
+
+### 4.2 真实服务端到端
+
+`tools/control-point/verify-fullscreen.ps1` 面向人工确认（Escape、Alt+Tab、Win 键）；
+自动化版本的 21 项检查通过 SOAP 驱动真实服务并读取 Win32 状态：
+
+| 阶段 | 断言 |
+| --- | --- |
+| 启动 | 窗口隐藏、`WS_EX_TOOLWINDOW`、初始 1x1 |
+| `SetAVTransportURI` | 仍隐藏（预加载不抢屏） |
+| `Play` | 可见、置顶、覆盖整块显示器 |
+| `Pause` / `Seek` | 保持可见与置顶，HWND 不变 |
+| 切换媒体 | 同一 HWND，仍只有一个 mpv 表面 |
+| `Stop` | 隐藏、退出置顶、HWND 保留 |
+| 重新 `Play` | 同一 HWND 再次全屏 |
+| 服务退出 | 进程退出，无残留窗口 |
+
+实测：**21/21 通过**（显示器 2560x1440 @150% 缩放）。
+
+### 4.3 本轮复现并修复的缺陷
+
+1. **DPI 未声明**：进程按 96 DPI 被虚拟化，2560x1440@150% 显示器报告为 1707x960，全屏窗口只覆盖屏幕 2/3。
+   必须在应用清单声明 `PerMonitorV2`；`Main` 运行后再调用 `SetProcessDpiAwarenessContext` 会被系统拒绝。
+2. **置顶样式未生效**：对隐藏窗口设置 `WS_EX_TOPMOST` 后 Windows 不保留该样式；必须在窗口可见后再置顶并回读验证。
+3. **预加载占屏**：libmpv 打开文件即为 paused，旧策略把 Paused 一律当"暂停中"，导致仅设置 URI 就黑屏。
+4. **Stop 后事件倒灌**：Stop 与 loadfile 交错时，旧文件的 end-file 会把状态改回 Stopped，令新文件卡在"已加载但未播放"。
+   现按 libmpv 的 playlist entry 编号丢弃过期事件。
+5. **状态机粘滞**：`Stopped -> Paused` 不是合法转换，重播时状态机被永久卡住；加载入口与真实播放恢复均显式经过 `Transitioning`。
+6. **快速 Play/Stop 后重载丢失事件**：重载带重试与有界等待，失败时明确报错而不是假装成功。

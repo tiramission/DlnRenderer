@@ -25,6 +25,10 @@ public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsy
     private string? _title;
     private PlaybackStatus _status = PlaybackStatus.Empty;
     private string? _lastError;
+    private bool _lastKnownVideo;
+    private bool _playbackStarted;
+    private bool _stopBarrier;
+    private bool _needsReload;
     private bool _disposed;
 
     public RendererSession(MpvPlayer player, VideoPresenter? presenter, DlnaOptions options, Action<string> log)
@@ -90,6 +94,10 @@ public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsy
         ArgumentNullException.ThrowIfNull(uri);
         ObjectDisposedException.ThrowIf(_disposed, this);
 
+        // Hiding before the new file is opened avoids showing the tail of the previous video (or a
+        // black frame from the freshly reset surface) while the new one buffers.
+        PlayerVisibility(show: false);
+
         var parsed = DidlLiteParser.Parse(metadataXml);
         var media = new MediaInfo(uri)
         {
@@ -104,17 +112,22 @@ public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsy
         await _commandGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            // Store the intent before touching the player so status queries never describe the
+            // previous media while the new load is in flight.
             lock (_stateGate)
             {
-                // Store the intent before touching the player so status queries never describe
-                // the previous media while the new load is in flight.
                 _uri = uri;
                 _metadata = metadataXml;
                 _title = media.Title;
                 _lastError = null;
-            }
 
-            PlayerVisibility(show: false);
+                // A new medium starts from a clean slate: nothing has been presented yet, and
+                // libmpv opens every file paused, which must not take the screen.
+                _lastKnownVideo = false;
+                _playbackStarted = false;
+                _stopBarrier = false;
+                _needsReload = false;
+            }
 
             try
             {
@@ -147,13 +160,31 @@ public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsy
         {
             var status = await _player.GetStatusAsync(cancellationToken).ConfigureAwait(false);
 
-            // After Stop (or a failed load) the URI is still the current one but the player has no
-            // media: mpv would "play" nothing. Reload first so Play means play.
-            if (_uri is not null
-                && (status.State == PlaybackState.Error || status.Media is null || status.State == PlaybackState.Stopped))
+            // Reload when the player has no media left, or when Stop ended the previous run: mpv then
+            // still reports the old title but has nothing to play, and a bare Play would show an empty
+            // window. The reload is awaited so this call does not return before playback can start.
+            if (status.Media is null
+                || status.State is PlaybackState.Stopped or PlaybackState.Error
+                || _needsReload)
             {
                 _log("reloading media before play");
                 await ReloadCurrentAsync(cancellationToken).ConfigureAwait(false);
+
+                var reloaded = await _player.GetStatusAsync(cancellationToken).ConfigureAwait(false);
+                if (reloaded.Media is null || reloaded.State == PlaybackState.Error)
+                {
+                    throw new InvalidOperationException(
+                        $"Media could not be loaded: {reloaded.ErrorMessage ?? "the player has no media"}");
+                }
+            }
+
+            // Announce the intent before issuing Play: the player reports Playing from its own thread,
+            // and a Paused status must already read as "the user paused" when that event lands.
+            lock (_stateGate)
+            {
+                _playbackStarted = true;
+                _stopBarrier = false;
+                _needsReload = false;
             }
 
             await _player.PlayAsync(cancellationToken).ConfigureAwait(false);
@@ -171,6 +202,19 @@ public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsy
         await ExecuteAsync("stop", async () =>
         {
             await _player.StopAsync(cancellationToken).ConfigureAwait(false);
+
+            lock (_stateGate)
+            {
+                // Stop is authoritative from here on: events already queued by mpv still describe the
+                // media that was playing and arrive as "Playing", and acting on them would put the
+                // overlay back up after the cast ended.
+                _playbackStarted = false;
+                _stopBarrier = true;
+
+                // The next Play must reload: the player keeps the old title but cannot play it again.
+                _needsReload = true;
+            }
+
             PlayerVisibility(show: false);
         }, cancellationToken).ConfigureAwait(false);
     }
@@ -264,6 +308,10 @@ public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsy
         _disposed = true;
         _player.StatusChanged -= OnPlayerStatusChanged;
 
+        // Take the overlay down before the player goes away, otherwise a destroyed mpv surface could
+        // leave a fullscreen window painting a blank frame during shutdown.
+        PlayerVisibility(show: false);
+
         await _player.DisposeAsync().ConfigureAwait(false);
         _commandGate.Dispose();
     }
@@ -293,7 +341,30 @@ public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsy
             Album = parsed.Album,
         };
 
-        await _player.LoadAsync(media, cancellationToken).ConfigureAwait(false);
+        // Reloading right after Stop overlaps libmpv's own teardown of the previous file: the load can
+        // be discarded without any event, leaving the status at Transitioning forever. Retry a couple
+        // of times with a bounded wait, then fail loudly - a caller must never be told Play succeeded
+        // when nothing is going to play.
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            await _player.LoadAsync(media, cancellationToken).ConfigureAwait(false);
+
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+            while (DateTime.UtcNow < deadline)
+            {
+                var status = await _player.GetStatusAsync(cancellationToken).ConfigureAwait(false);
+                if (status.State is PlaybackState.Paused or PlaybackState.Playing or PlaybackState.Error)
+                {
+                    return;
+                }
+
+                await Task.Delay(50, cancellationToken).ConfigureAwait(false);
+            }
+
+            _log($"reload attempt {attempt} did not settle; retrying");
+        }
+
+        throw new TimeoutException("Media did not finish loading after 3 attempts.");
     }
 
     private async Task ExecuteAsync(
@@ -323,10 +394,11 @@ public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsy
 
     private void OnPlayerStatusChanged(object? sender, PlaybackStatus status)
     {
-        Uri? uri;
+        bool requested;
+        bool playbackStarted;
         lock (_stateGate)
         {
-            uri = _uri;
+            var uri = _uri;
 
             // Ignore events raised for media that has already been replaced.
             if (uri is not null && status.Media is not null && status.Media.MediaUri != uri)
@@ -334,22 +406,56 @@ public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsy
                 return;
             }
 
+            // After Stop, queued events describing the stopped medium arrive as Playing and must not
+            // restart the presentation. Only playback events are filtered: a reload issues
+            // Transitioning, Paused and Error, and swallowing those would leave the reload wait
+            // observing a state that never advances.
+            if (_stopBarrier
+                && !_playbackStarted
+                && status.State is PlaybackState.Playing or PlaybackState.Paused or PlaybackState.Buffering)
+            {
+                return;
+            }
+
+            requested = uri is not null;
+            playbackStarted = _playbackStarted;
+
             _status = status;
             _lastError = status.ErrorMessage;
+
+            // Remember the kind: mpv reports Unknown again once the file ends or is replaced, right
+            // before the next Play reloads it.
+            if (status.MediaKind != MediaKind.Unknown)
+            {
+                _lastKnownVideo = status.MediaKind == MediaKind.Video;
+            }
         }
 
-        if (status.State is PlaybackState.Playing or PlaybackState.Paused && status.MediaKind == MediaKind.Video)
-        {
-            PlayerVisibility(show: true);
-        }
-        else if (status.State is PlaybackState.Stopped or PlaybackState.Error)
-        {
-            PlayerVisibility(show: false);
-        }
+        // One decision, from VideoWindowPolicy: show from the first video frame until Stop/Error,
+        // and treat the event as stale when it describes media the player is no longer serving.
+        PlayerVisibility(
+            VideoWindowPolicy.Decide(status, requested, _lastKnownVideo, playbackStarted)
+                == VideoWindowMode.Fullscreen);
 
+        _log($"player status {status.State} kind={status.MediaKind} pos={status.Position.TotalSeconds:F1} error={status.ErrorMessage}");
         SnapshotChanged?.Invoke(GetSnapshot());
     }
 
+    /// <summary>
+    /// Applies the presentation window state, in one place, from every caller that can change it.
+    /// </summary>
+    /// <remarks>
+    /// Player events arrive on mpv's thread, DLNA commands on request threads and IPC commands on the
+    /// pipe thread. Centralising the decision here is what keeps a slow Stop from hiding a window a
+    /// fast Play has already claimed.
+    /// <para>
+    /// There is deliberately no "already applied" short circuit: the presenter itself makes
+    /// <see cref="VideoPresenter.ShowFullscreen"/>/<see cref="VideoPresenter.Hide"/> idempotent, and
+    /// remembering the last requested mode went stale as soon as another path (a media load, a
+    /// display change) touched the window, leaving the overlay up over a paused, not-yet-played
+    /// stream.
+    /// </para>
+    /// </remarks>
     private void PlayerVisibility(bool show)
     {
         if (_presenter is null)
@@ -360,11 +466,8 @@ public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsy
 
         if (show)
         {
-            if (!_presenter.IsVisible)
-            {
-                _presenter.Show();
-                _log("video presenter shown");
-            }
+            _presenter.ShowFullscreen();
+            _log($"video presenter {_presenter.PresentationState} on monitor 0x{_presenter.MonitorHandle:X}");
         }
         else
         {
