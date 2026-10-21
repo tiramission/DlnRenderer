@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Text;
 
@@ -117,6 +118,7 @@ public sealed class GenaNotifier : IAsyncDisposable
     {
         var sequence = subscription.NextSequence();
         var acquired = false;
+        var elapsed = Stopwatch.StartNew();
 
         try
         {
@@ -154,6 +156,12 @@ public sealed class GenaNotifier : IAsyncDisposable
             }
 
             subscription.ResetFailures();
+
+            // A successful exchange is logged as well as a failed one: a control-point report has to be
+            // able to show that a real client's SUBSCRIBE was followed by a NOTIFY it answered with
+            // 200, and the absence of a failure line is not the same evidence.
+            _log($"notify {subscription.Sid} seq {sequence} -> {subscription.Callback.Uri} "
+                + $"{(int)response.StatusCode} in {elapsed.ElapsedMilliseconds} ms");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

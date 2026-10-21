@@ -146,10 +146,11 @@ public sealed class GenaEventing : IAsyncDisposable
     private string BuildAvTransportBody()
     {
         var uri = _renderer.CurrentUri?.AbsoluteUri ?? string.Empty;
+        var metadata = _renderer.CurrentMetadata ?? string.Empty;
         var state = _lastAvState;
         var status = _lastAvStatus;
         var duration = _lastAvDuration;
-        return GenaEventBuilder.BuildAvTransportLastChange(state, status, uri, duration, AvTransportActions(state));
+        return GenaEventBuilder.BuildAvTransportLastChange(state, status, uri, metadata, duration, AvTransportActions(state));
     }
 
     private string BuildRenderingControlBody()
@@ -220,6 +221,7 @@ public sealed class GenaEventing : IAsyncDisposable
                         AvTransportService.MapState(snapshot.State),
                         string.IsNullOrEmpty(snapshot.Error) ? "OK" : "ERROR_OCCURRED",
                         _renderer.CurrentUri?.AbsoluteUri ?? string.Empty,
+                        _renderer.CurrentMetadata ?? string.Empty,
                         AvTransportService.FormatDuration(snapshot.Duration),
                         AvTransportActions(AvTransportService.MapState(snapshot.State)));
                 }

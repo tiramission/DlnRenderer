@@ -48,12 +48,21 @@ public static class GenaEventBuilder
     /// <param name="state">Transport state as advertised in <c>TransportState</c>.</param>
     /// <param name="status"><c>OK</c> or <c>ERROR_OCCURRED</c>.</param>
     /// <param name="currentUri">Current media URI, empty when nothing is loaded.</param>
+    /// <param name="uriMetadata">DIDL-Lite metadata sent with the URI, empty when absent.</param>
     /// <param name="duration">Track duration as <c>H:MM:SS</c>, empty when unknown.</param>
     /// <param name="actions">Actions currently available, comma separated.</param>
+    /// <remarks>
+    /// The two URI variables and the two metadata variables are deliberately both present. The AV
+    /// specification defines <c>AVTransportURI</c> as what the control point set and
+    /// <c>CurrentTrackURI</c> as what is playing; they are the same value in this single-track
+    /// renderer, but clients look at one or the other depending on when they subscribed. Omitting
+    /// either leaves a client that subscribed mid-playback unable to learn the URI from the event.
+    /// </remarks>
     public static string BuildAvTransportLastChange(
         string state,
         string status,
         string currentUri,
+        string uriMetadata,
         string duration,
         string actions)
     {
@@ -62,7 +71,10 @@ public static class GenaEventBuilder
             new XAttribute("val", "0"),
             StateVariable(AvTransportEvent, "TransportState", state),
             StateVariable(AvTransportEvent, "TransportStatus", status),
+            StateVariable(AvTransportEvent, "AVTransportURI", currentUri),
+            StateVariable(AvTransportEvent, "AVTransportURIMetaData", uriMetadata),
             StateVariable(AvTransportEvent, "CurrentTrackURI", currentUri),
+            StateVariable(AvTransportEvent, "CurrentTrackMetaData", uriMetadata),
             StateVariable(AvTransportEvent, "CurrentTrackDuration", duration),
             StateVariable(AvTransportEvent, "CurrentMediaDuration", duration),
             StateVariable(AvTransportEvent, "CurrentTransportActions", actions));

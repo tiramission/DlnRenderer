@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Text;
 using System.Xml.Linq;
@@ -25,6 +26,10 @@ public sealed class GenaSubscriptionTests : IAsyncLifetime
 
     private DlnaDeviceHost _host = null!;
     private HttpClient _client = null!;
+    private readonly FakeTransportRenderer _renderer = new();
+
+    /// <summary>Service-log lines produced by the host under test.</summary>
+    private readonly ConcurrentQueue<string> _logs = new();
 
     public Task InitializeAsync()
     {
@@ -34,7 +39,8 @@ public sealed class GenaSubscriptionTests : IAsyncLifetime
                 // Loopback callbacks are refused by default; tests need them.
                 Eventing = new GenaOptions { AllowLoopbackCallbacks = true },
             },
-            new FakeTransportRenderer());
+            _renderer,
+            message => _logs.Enqueue(message));
         _host.Start();
         _client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_host.HttpPort}") };
         return Task.CompletedTask;
@@ -237,6 +243,63 @@ public sealed class GenaSubscriptionTests : IAsyncLifetime
 
         var state = inner.Descendants().Single(e => e.Name.LocalName == "TransportState");
         Assert.Equal("STOPPED", state.Attribute("val")!.Value);
+    }
+
+    [Fact]
+    public async Task Initial_event_carries_the_media_uri_and_metadata()
+    {
+        // A control point that subscribes mid-playback learns the track from the initial event, not
+        // from the action that started it, so both URI variables and both metadata variables matter.
+        var uri = new Uri("http://192.168.1.9:18777/movie.mp4");
+        const string didl = "<DIDL-Lite xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\">"
+            + "<item id=\"1\"><dc:title xmlns:dc=\"http://purl.org/dc/elements/1.1/\">Movie</dc:title></item>"
+            + "</DIDL-Lite>";
+        await _renderer.LoadAsync(uri, didl, CancellationToken.None);
+
+        await using var callback = CallbackServer.Start();
+        await SubscribeAsync(callback);
+        var first = (await callback.WaitForAsync(1, Timeout))[0];
+
+        var inner = XDocument.Parse(XDocument.Parse(first.Body).Root!
+            .Descendants().Single(e => e.Name.LocalName == "LastChange").Value);
+
+        string Value(string name)
+            => inner.Descendants().Single(e => e.Name.LocalName == name).Attribute("val")!.Value;
+
+        Assert.Equal(uri.AbsoluteUri, Value("AVTransportURI"));
+        Assert.Equal(didl, Value("AVTransportURIMetaData"));
+        Assert.Equal(uri.AbsoluteUri, Value("CurrentTrackURI"));
+        Assert.Equal(didl, Value("CurrentTrackMetaData"));
+    }
+
+    [Fact]
+    public async Task Successful_notifications_are_logged_with_sid_and_sequence()
+    {
+        // This is the evidence a real-device acceptance report quotes: SUBSCRIBE followed by a NOTIFY
+        // the control point answered with 200. A failure-only log cannot prove the positive case.
+        await using var callback = CallbackServer.Start();
+        var created = await SubscribeAsync(callback);
+        var sid = created.Headers.GetValues("SID").Single();
+        await callback.WaitForAsync(1, Timeout);
+
+        _host.Eventing.UpdateAvTransport(PlaybackState.Playing, null, TimeSpan.FromMinutes(1));
+        await callback.WaitForAsync(2, Timeout);
+
+        // Delivery completes after the callback answers, so poll instead of assuming the log line
+        // is already flushed when the notification arrives.
+        var deadline = DateTime.UtcNow + Timeout;
+        string? line = null;
+        while (DateTime.UtcNow < deadline && line is null)
+        {
+            line = _logs.FirstOrDefault(l => l.Contains($"notify {sid} seq 1", StringComparison.Ordinal)
+                && l.Contains("200", StringComparison.Ordinal));
+            if (line is null)
+            {
+                await Task.Delay(50);
+            }
+        }
+
+        Assert.NotNull(line);
     }
 
     [Fact]
