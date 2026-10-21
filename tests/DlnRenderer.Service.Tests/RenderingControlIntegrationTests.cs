@@ -23,10 +23,9 @@ public class RenderingControlIntegrationTests
 {
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(20);
 
-    [Fact]
+    [MpvFact]
     public async Task SetVolume_over_soap_changes_the_real_player_volume()
     {
-        RequireMpv();
         await using var ctx = await SessionContext.CreateAsync();
 
         var soap = await ctx.SoapVolumeAsync(volume: 31);
@@ -37,10 +36,9 @@ public class RenderingControlIntegrationTests
         Assert.Equal(31, status.Volume);
     }
 
-    [Fact]
+    [MpvFact]
     public async Task GetVolume_reports_the_player_value_after_a_direct_change()
     {
-        RequireMpv();
         await using var ctx = await SessionContext.CreateAsync();
 
         // Change the player behind the protocol layer's back, as another path could.
@@ -51,10 +49,9 @@ public class RenderingControlIntegrationTests
         Assert.Equal("73", reported);
     }
 
-    [Fact]
+    [MpvFact]
     public async Task SetMute_over_soap_mutes_the_real_player()
     {
-        RequireMpv();
         await using var ctx = await SessionContext.CreateAsync();
 
         await ctx.SoapMuteAsync(muted: true);
@@ -64,10 +61,9 @@ public class RenderingControlIntegrationTests
         Assert.False((await ctx.Player.GetStatusAsync(CancellationToken.None)).Muted);
     }
 
-    [Fact]
+    [MpvFact]
     public async Task Volume_changes_reach_a_gena_subscriber()
     {
-        RequireMpv();
         await using var ctx = await SessionContext.CreateAsync();
         await using var callback = CallbackServer.Start();
 
@@ -92,10 +88,9 @@ public class RenderingControlIntegrationTests
         Assert.NotNull(notify.Sid);
     }
 
-    [Fact]
+    [MpvFact]
     public async Task Snapshot_volume_matches_the_player_after_a_change()
     {
-        RequireMpv();
         await using var ctx = await SessionContext.CreateAsync();
 
         await ctx.SoapVolumeAsync(volume: 55);
@@ -104,10 +99,9 @@ public class RenderingControlIntegrationTests
             "snapshot volume follows the player");
     }
 
-    [Fact]
+    [MpvFact]
     public async Task Volume_and_mute_survive_stopping_and_switching_media()
     {
-        RequireMpv();
         var clip = TestMediaPath();
 
         await using var ctx = await SessionContext.CreateAsync();
@@ -124,10 +118,9 @@ public class RenderingControlIntegrationTests
         Assert.True(status.Muted);
     }
 
-    [Fact]
+    [MpvFact]
     public async Task Volume_can_be_set_while_playing_and_while_stopped()
     {
-        RequireMpv();
         var clip = TestMediaPath();
 
         await using var ctx = await SessionContext.CreateAsync();
@@ -147,10 +140,9 @@ public class RenderingControlIntegrationTests
         Assert.Equal(12, (await ctx.Player.GetStatusAsync(CancellationToken.None)).Volume);
     }
 
-    [Fact]
+    [MpvFact]
     public async Task Out_of_range_volume_over_soap_faults_and_leaves_the_player_alone()
     {
-        RequireMpv();
         await using var ctx = await SessionContext.CreateAsync();
 
         var before = (await ctx.Player.GetStatusAsync(CancellationToken.None)).Volume;
@@ -163,10 +155,9 @@ public class RenderingControlIntegrationTests
         Assert.Equal(before, (await ctx.Player.GetStatusAsync(CancellationToken.None)).Volume);
     }
 
-    [Fact]
+    [MpvFact]
     public async Task Soap_volume_change_reaches_a_subscriber_with_the_player_value()
     {
-        RequireMpv();
         await using var ctx = await SessionContext.CreateAsync();
         await using var callback = CallbackServer.Start();
 
@@ -197,10 +188,9 @@ public class RenderingControlIntegrationTests
         Assert.Equal(sequences.Distinct().Count(), sequences.Length);
     }
 
-    [Fact]
+    [MpvFact]
     public async Task Mute_change_reaches_a_subscriber()
     {
-        RequireMpv();
         await using var ctx = await SessionContext.CreateAsync();
         await using var callback = CallbackServer.Start();
 
@@ -258,12 +248,6 @@ public class RenderingControlIntegrationTests
         }
 
         throw new TimeoutException($"timed out waiting for: {what}");
-    }
-
-    private static void RequireMpv()
-    {
-        // Every test here needs the native player; without it they would assert nothing.
-        Assert.True(MpvRuntime.IsAvailable(), $"libmpv is not available at {MpvRuntime.ExpectedPath}");
     }
 
     /// <summary>

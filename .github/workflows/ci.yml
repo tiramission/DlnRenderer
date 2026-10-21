@@ -30,6 +30,17 @@ jobs:
           dotnet --info
           dotnet --list-sdks
 
+      # libmpv is GPL-2.0-or-later and deliberately not vendored (docs/architecture.md §17), so a
+      # clean runner has none and the Player project would only warn. Fetching the exact build that
+      # was reviewed - pinned twice by hash, the release archive and then the DLL - lets the
+      # player-backed integration tests run for real instead of skipping, which is where the
+      # RenderingControl and VolumeStateConsistency coverage lives. Downloading a GPL binary for
+      # CI use is not redistribution; nothing from it is committed. Needs 7z, which the windows
+      # runner image ships.
+      - name: Fetch libmpv (pinned, hash-verified)
+        shell: pwsh
+        run: ./scripts/fetch-libmpv.ps1 -Download
+
       - name: Restore
         run: dotnet restore DlnRenderer.sln
 
@@ -39,15 +50,16 @@ jobs:
       # ReadyToRun optimization step during `dotnet build` - ReadyToRun is a publish property, but
       # the packaging target applies it to the build too - and failed on the runner with "a valid
       # runtime package was not found". The Release publish path that produces a shippable binary
-      # is exercised by tools/package/build-dist.ps1, which passes an explicit -r win-x64; that
-      # stays out of CI because it needs libmpv and a real runtime. Platform=x64 keeps the
-      # RID-specific App off AnyCPU. No libmpv is present, so the Player project warns instead of
-      # failing, and playback integration tests skip rather than pass.
+      # is exercised by tools/package/build-dist.ps1, which passes an explicit -r win-x64. The
+      # fetched libmpv lands in the Player project, so the build runs without the
+      # WarnWhenLibmpvMissing warning that a DLL-less runner would emit.
       - name: Build
         run: dotnet build DlnRenderer.sln -c Debug --no-restore -p:Platform=x64
 
       - name: Test
-        # --no-build keeps the tested binaries identical to the built ones.
+        # --no-build keeps the tested binaries identical to the built ones. With libmpv fetched
+        # above the player-backed tests execute; a run without that step reports them as skipped
+        # with a message naming the script, never as passes.
         run: dotnet test DlnRenderer.sln -c Debug --no-build -p:Platform=x64 --logger "console;verbosity=normal"
 
       # The packaging contract: whatever folder or package we hand out must carry LICENSE,

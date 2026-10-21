@@ -24,10 +24,9 @@ public class VolumeStateConsistencyTests
 {
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(20);
 
-    [Fact]
+    [MpvFact]
     public async Task Concurrent_volume_writers_leave_the_player_and_snapshot_agreeing()
     {
-        RequireMpv();
         await using var ctx = await SessionContext.CreateAsync();
 
         // Several control points setting volume in quick succession, as a UI slider dragged while a
@@ -50,10 +49,9 @@ public class VolumeStateConsistencyTests
         Assert.Equal(player, ctx.Session.GetSnapshot().Playback.Volume);
     }
 
-    [Fact]
+    [MpvFact]
     public async Task Unsubscribing_while_publishing_does_not_fail_the_publish()
     {
-        RequireMpv();
         await using var ctx = await SessionContext.CreateAsync();
         await using var first = CallbackServer.Start();
         await using var second = CallbackServer.Start();
@@ -79,10 +77,9 @@ public class VolumeStateConsistencyTests
         await second.WaitForAsync(2, Timeout);
     }
 
-    [Fact]
+    [MpvFact]
     public async Task Mute_state_is_reported_identically_by_snapshot_and_soap()
     {
-        RequireMpv();
         await using var ctx = await SessionContext.CreateAsync();
 
         await ctx.Player.SetMuteAsync(true, CancellationToken.None);
@@ -94,10 +91,9 @@ public class VolumeStateConsistencyTests
         Assert.Equal("1", soapMute);
     }
 
-    [Fact]
+    [MpvFact]
     public async Task Shutdown_while_a_callback_is_slow_does_not_hang()
     {
-        RequireMpv();
         var ctx = await SessionContext.CreateAsync();
         await using var callback = CallbackServer.Start();
         callback.HangRequests = true;
@@ -112,10 +108,9 @@ public class VolumeStateConsistencyTests
         Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(10), $"dispose took {stopwatch.Elapsed}");
     }
 
-    [Fact]
+    [MpvFact]
     public async Task A_player_failure_does_not_leave_a_pending_event_task()
     {
-        RequireMpv();
         await using var ctx = await SessionContext.CreateAsync();
         await using var callback = CallbackServer.Start();
         await SubscribeAsync(ctx, callback);
@@ -169,9 +164,6 @@ public class VolumeStateConsistencyTests
 
         throw new TimeoutException($"timed out waiting for: {what}");
     }
-
-    private static void RequireMpv()
-        => Assert.True(MpvRuntime.IsAvailable(), $"libmpv is not available at {MpvRuntime.ExpectedPath}");
 
     private sealed class SessionContext : IAsyncDisposable
     {
