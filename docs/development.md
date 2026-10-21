@@ -168,11 +168,30 @@ tests/DlnRenderer.Dlna.Tests/
 tests/DlnRenderer.Service.Tests/
 tools/control-point/         ssdp-discover / renderer-check / ipc-check / media-server / capture-window
 tools/package/               build-dist / install / uninstall / firewall-rules / build-msix / verify-service
+tools/assets/                make-icons（生成应用图标与 MSIX 瓦片/启动图）
+src/DlnRenderer.App/Assets/  AppIcon.ico、瓦片与启动图（均由 make-icons 生成）
 scripts/fetch-libmpv.ps1
 docs/
 ```
 
-## 9. 调试 DLNA 的实用命令
+## 9. 图标与图片资源
+
+`src/DlnRenderer.App/Assets/` 里的 PNG/ICO **不是手绘后丢进去的二进制**，由脚本生成：
+
+```powershell
+pwsh tools/assets/make-icons.ps1              # 重新生成全部资源
+pwsh tools/assets/make-icons.ps1 -Preview artifacts/icon-preview   # 另外导出各尺寸对比图
+```
+
+- `AppIcon.ico` 含 16/20/24/32/40/48/64/96/128/256 十个 32bpp DIB 帧（标题栏与托盘都读这个文件）；
+- 小于 24px 的尺寸只用播放标记，24px 起用“屏幕边框 + 标记”：更小的尺寸上边框会细到一个像素以下，
+  糊成一团；
+- 瓦片、启动图与 Store 图标比例写在脚本的 `$assets` 表里，尺寸必须与文件名里的 `scale-200` /
+  `targetsize-*` 限定符一致，否则打包后系统挑不到该变体。
+
+改图标时不要只改 PNG：先改脚本里的几何与配色，再重新生成，否则下次生成会把改动覆盖掉。
+
+## 10. 调试 DLNA 的实用命令
 
 ```powershell
 # 发现
