@@ -1,5 +1,14 @@
 param(
     [string]$MediaUrl = "",
+    # Audio and video differ only in the DIDL class and protocolInfo this check advertises; both go
+    # through the same AVTransport actions, so the acceptance run needs to be able to say which one
+    # it actually exercised.
+    [ValidateSet("video", "audio")]
+    [string]$MediaKind = "video",
+    # Skip multicast discovery and use this description URL. Needed on a machine that cannot receive
+    # its own multicast (Windows SSDPSRV also owns UDP 1900); discovery still has to be verified
+    # separately, with a real control point.
+    [string]$Location = "",
     [switch]$KeepRunning
 )
 
@@ -37,15 +46,20 @@ function Show-Action {
 $avt = "urn:schemas-upnp-org:service:AVTransport:1"
 $cm = "urn:schemas-upnp-org:service:ConnectionManager:1"
 
-# 1. Discovery over real multicast.
-Write-Output "== SSDP discovery =="
-$discovery = & "$PSScriptRoot\ssdp-discover.ps1" -SearchTarget "urn:schemas-upnp-org:device:MediaRenderer:1"
-$discovery | ForEach-Object { Write-Output "  $_" }
-$location = ($discovery | Where-Object { $_ -match "ST=urn:schemas-upnp-org:device:MediaRenderer:1" } | ForEach-Object {
-    if ($_ -match "LOCATION=([^|]+)") { $Matches[1].Trim() }
-} | Select-Object -First 1)
+# 1. Discovery over real multicast, unless the caller already knows the description URL.
+if ($Location) {
+    Write-Output "== SSDP discovery skipped: using $Location =="
+    $location = $Location
+} else {
+    Write-Output "== SSDP discovery =="
+    $discovery = & "$PSScriptRoot\ssdp-discover.ps1" -SearchTarget "urn:schemas-upnp-org:device:MediaRenderer:1"
+    $discovery | ForEach-Object { Write-Output "  $_" }
+    $location = ($discovery | Where-Object { $_ -match "ST=urn:schemas-upnp-org:device:MediaRenderer:1" } | ForEach-Object {
+        if ($_ -match "LOCATION=([^|]+)") { $Matches[1].Trim() }
+    } | Select-Object -First 1)
 
-if (-not $location) { throw "device not discovered" }
+    if (-not $location) { throw "device not discovered" }
+}
 Write-Output "== device description: $location =="
 $description = Invoke-WebRequest -Uri $location -UseBasicParsing -TimeoutSec 15
 $device = [xml]$description.Content
@@ -58,12 +72,17 @@ Write-Output "  deviceType=$deviceType"
 Write-Output "  udn=$udn"
 
 $services = @{}
+# The description carries relative URLs without a leading slash (relative to the description URL,
+# as the specification allows). Resolve them as URIs instead of concatenating strings, or a valid
+# description is mistaken for a malformed one.
+$descriptionUri = [Uri]$location
 foreach ($service in $device.SelectNodes("//*[local-name()='service']")) {
     $type = $service.SelectSingleNode("*[local-name()='serviceType']").InnerText
     $control = $service.SelectSingleNode("*[local-name()='controlURL']").InnerText
     $scpd = $service.SelectSingleNode("*[local-name()='SCPDURL']").InnerText
-    $services[$type] = $base + $control
-    $scpdResponse = Invoke-WebRequest -Uri ($base + $scpd) -UseBasicParsing -TimeoutSec 15
+    $services[$type] = ([Uri]::new($descriptionUri, $control)).AbsoluteUri
+    $scpdUri = ([Uri]::new($descriptionUri, $scpd)).AbsoluteUri
+    $scpdResponse = Invoke-WebRequest -Uri $scpdUri -UseBasicParsing -TimeoutSec 15
     Write-Output "  service=$type scpdBytes=$($scpdResponse.Content.Length)"
 }
 
@@ -80,10 +99,12 @@ Write-Output "== AVTransport.GetTransportInfo (before load) =="
 $before = Invoke-Soap -Url $services[$avt] -ServiceType $avt -Action "GetTransportInfo" -Arguments @{ InstanceID = 0 }
 Write-Output ("  " + (Show-Action -Xml $before -Action "GetTransportInfo"))
 
+$itemClass = if ($MediaKind -eq "audio") { "object.item.audioItem.musicTrack" } else { "object.item.videoItem" }
+$protocolInfo = if ($MediaKind -eq "audio") { "http-get:*:audio/mpeg:*" } else { "http-get:*:video/mp4:*" }
 $didl = '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">' +
         '<item id="1" parentID="0" restricted="1"><dc:title>DLNA Test Clip</dc:title>' +
-        '<upnp:class>object.item.videoItem</upnp:class>' +
-        "<res protocolInfo=`"http-get:*:video/mp4:*`">$([System.Security.SecurityElement]::Escape($MediaUrl))</res>" +
+        "<upnp:class>$itemClass</upnp:class>" +
+        "<res protocolInfo=`"$protocolInfo`">$([System.Security.SecurityElement]::Escape($MediaUrl))</res>" +
         '</item></DIDL-Lite>'
 
 Write-Output "== SetAVTransportURI =="

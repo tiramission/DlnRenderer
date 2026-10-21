@@ -32,11 +32,19 @@ try {
 
     $job = Start-ThreadJob -ArgumentList $listener, $buffer, $stop.Token -ScriptBlock {
         param($listener, $buffer, $token)
+        # Accept must be polled, not blocking: a blocking AcceptTcpClient keeps the job alive and
+        # Stop-Job waits for it, so the whole check hangs at cleanup after passing every assertion.
         while (-not $token.IsCancellationRequested) {
+            if (-not $listener.Pending()) {
+                Start-Sleep -Milliseconds 20
+                continue
+            }
+
             try {
                 $client = $listener.AcceptTcpClient()
             } catch { break }
             try {
+                $client.ReceiveTimeout = 2000
                 $stream = $client.GetStream()
                 $bytes = [byte[]]::new(65536)
                 $read = $stream.Read($bytes, 0, $bytes.Length)

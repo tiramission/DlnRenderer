@@ -10,7 +10,7 @@ dotnet build DlnRenderer.sln -c Debug
 dotnet test DlnRenderer.sln -c Debug
 ```
 
-实测结果：**351 通过 / 0 失败，0 跳过**（Core 25、Player 20、Dlna 207、Service 99）。
+实测结果：**369 通过 / 0 失败，0 跳过**（Core 25、Player 20、Dlna 218、Service 106）。
 
 连续 3 次完整运行均为 0 失败（`dotnet test DlnRenderer.sln -c Debug --no-build`）。
 
@@ -41,7 +41,7 @@ dotnet test DlnRenderer.sln -c Debug
 | 顺序加载 | 音频→视频→音频，类型正确、位置重置 |
 | 播放中释放 | 播放中释放 < 5 s |
 
-### 1.3 Dlna（110）
+### 1.3 Dlna（218）
 
 | 组 | 覆盖内容 |
 | --- | --- |
@@ -53,7 +53,9 @@ dotnet test DlnRenderer.sln -c Debug
 | `DidlLiteParserTests` | 字段提取、损坏/空/XXE 输入容错 |
 | `DlnaDeviceHostTests` | 回环上的真实 HTTP：描述/SCPD、SOAP 控制、Fault（含 `utf-8` 声明）、405/404/501、端口释放与冲突、重复启动 |
 
-### 1.4 Service（13）
+### 1.4 Service（106）
+
+本节只展开 IPC；窗口、GENA 与 RenderingControl 的服务层测试见 §4.1、§5.1。
 
 `IpcServerTests` 通过真实 Named Pipe 验证：
 
@@ -260,6 +262,7 @@ soap action GetTransportInfo from 192.168.1.72   (控制端持续轮询)
   设备描述结构或 AVTransport 动作，自动化回归覆盖了这些路径，但**实机复测仍需补做**。
 - 曾观察到手机（192.168.1.12）取走描述后未请求 SCPD，当时服务已停止运行，
   不能据此判断客户端行为。
+- 阶段 B 的补测、取证工具与手机端待执行清单见 **§7**。
 
 ### 5.4 已知限制
 
@@ -292,3 +295,119 @@ soap action GetTransportInfo from 192.168.1.72   (控制端持续轮询)
 | 当天文件永不删除 | 单元测试 | 通过 |
 | 非 `service-yyyyMMdd.log` 不受影响 | 单元测试 + 手动植入无关文件 | 通过 |
 | 启动时即触发清理 | 单元测试 + 实机启动验证 | 通过 |
+
+---
+
+## 7. 阶段 B：真实控制端互操作验收
+
+### 7.1 判定规则
+
+只有**真实控制端**（日志中不是本机地址的客户端）留下的证据才算通过。
+本机脚本能证明协议行为，但不能替代第三方客户端；报告中的「仅本地脚本」不计入阶段 B 完成。
+
+### 7.2 本轮实测：真实控制端（2026-10-21 18:09–18:10）
+
+证据来源：`%LOCALAPPDATA%\DlnRenderer\logs\service-20261021.log` 最近一次服务会话，
+由 `stage-b-report.ps1` 生成（见 [`docs/stage-b-evidence.md`](stage-b-evidence.md)）。
+
+| 检查 | 结果 | 证据 |
+| --- | --- | --- |
+| 设备发现 | **通过** | 4 台局域网设备共 73 次 M-SEARCH，服务应答 17 次 |
+| 设备描述 / SCPD | **通过** | `192.168.1.72` GET 描述 1 次、SCPD 3 次 |
+| 视频投送 | **通过（服务端）** | `SetAVTransportURI` + `Play`，加载 `http://192.168.1.72:57645/external/video/media/1000034306.mp4`，`kind=Video`，位置持续推进 |
+| 暂停 / 继续 | **通过** | `Pause` 2 次、`Play` 3 次，状态在 `PLAYING` 与 `PAUSED_PLAYBACK` 间切换 |
+| Seek | **通过** | `Seek` 1 次，随后 `GetPositionInfo` 位置跳变 |
+| 停止 | **通过** | `Stop` 1 次 |
+| 音量 / 静音 | 客户端未发送 | `GetVolume` / `SetVolume` / `GetMute` / `SetMute` 调用均为 0 |
+| 事件订阅 | **失败** | SUBSCRIBE 3 次全部被接受，初始 NOTIFY 全部返回 HTTP 412 |
+| 音乐投送 | 未发生 | 本次会话只有一条 `player loading`，且为 videoItem |
+| UI 退出后继续播放 | 未验证 | 会话以 `ctrl+c` 结束 |
+
+日志原文：
+
+```text
+2026-10-21 18:09:31.140 soap action Stop from 192.168.1.72
+2026-10-21 18:09:31.160 soap action SetAVTransportURI from 192.168.1.72
+2026-10-21 18:09:31.167 player loading http://192.168.1.72:57645/external/video/media/1000034306.mp4
+2026-10-21 18:09:31.301 soap action Play from 192.168.1.72
+2026-10-21 18:09:35.502 soap action Pause from 192.168.1.72
+2026-10-21 18:09:38.614 soap action Play from 192.168.1.72
+2026-10-21 18:10:07.841 soap action Seek from 192.168.1.72
+2026-10-21 18:09:29 SUBSCRIBE RenderingControl from 192.168.1.72 accepted -> http://192.168.1.72:58645/dev/.../RenderingControl/event/cb
+2026-10-21 18:09:31.828 notify failed for uuid:0903b795-... (HTTP 412); 1/5
+```
+
+「通过（服务端）」只说明服务端收到并执行了投送，画面是否出现、声音是否可听仍需人眼确认。
+同日 14:13 会话中，同一客户端订阅过 AVTransport 与 RenderingControl，
+`NOTIFY` 记录为 `timed out`（回调 `192.168.1.72:8081`）与 `HTTP 412`，没有任何一次 2xx。
+
+#### 本机真实协议回归
+
+- `SetAVTransportURI` → `Play` → `PLAYING` → `GetPositionInfo`（2 分钟测试片，位置推进）
+- `Pause` → `PAUSED_PLAYBACK`；`Seek(REL_TIME 00:00:30)` 回读 30 秒；`Stop` → `STOPPED`
+- 音频 DIDL（`audioItem.musicTrack`）走同一链路，30 秒 MP3 正常推进
+- GENA + RenderingControl：**22/22 通过**（本机回调，非第三方）
+
+> 本机无法自收多播（§3.2），本地回归用 `renderer-check.ps1 -Location` 跳过发现；
+> 发现能力由真实客户端日志证明。
+
+### 7.3 验收清单与已记录结果
+
+重新取证命令：
+
+```powershell
+# 1) 启动服务（日志写入 %LOCALAPPDATA%\DlnRenderer\logs\service-yyyyMMdd.log）
+src\DlnRenderer.Service\bin\Debug\net10.0-windows\DlnRenderer.Service.exe --http-port 18090
+
+# 2) 手机完成操作后生成证据表
+pwsh tools/control-point/stage-b-report.ps1 -OutputPath docs/stage-b-evidence.md
+```
+
+| 检查 | 192.168.1.72（本轮真实客户端） | BubbleUPnP | 手机视频 App | 判定依据 |
+| --- | --- | --- | --- | --- |
+| 设备发现 | 通过 | — | — | M-SEARCH + 服务应答 |
+| 视频投送 | 通过（服务端） | 待填 | 待填 | `SetAVTransportURI` + `Play` + 实际加载 |
+| 音乐投送 | 未发生 | 待填 | 待填 | 本次会话没有 audioItem |
+| 暂停 / 继续 | 通过 | 待填 | 待填 | `Pause` / `Play` 状态切换 |
+| 停止 | 通过 | 待填 | 待填 | `Stop` → `STOPPED` |
+| Seek | 通过 | 待填 | 待填 | `Seek` 后位置跳转 |
+| 音量 | 客户端未发送 | 待填 | 待填 | RenderingControl 调用为 0 |
+| 静音 | 客户端未发送 | 待填 | 待填 | 同上 |
+| 事件订阅 | **失败（HTTP 412）** | 待填 | 待填 | SUBSCRIBE 3 次，NOTIFY 2xx 为 0 |
+| 状态观察 | 无法判断 | 待填 | 待填 | 需要客户端截图 |
+| UI 退出 | 未验证 | 待填 | 待填 | 需要真实会话 |
+
+填写规则：客户端没有该入口时写「客户端未提供」，不要写「渲染器不支持」；
+不得用「代码已实现」代替「已验证」。
+
+### 7.4 本轮修复的缺陷（B5 的前置工作）
+
+| 缺陷 | 影响 | 修复 |
+| --- | --- | --- |
+| NOTIFY 成功不写日志 | B3 无法取证，只能看到失败 | 记录 SID、SEQ、回调、HTTP 状态、耗时 |
+| AVTransport 事件体缺 `AVTransportURI` / 元数据 | 播放中途订阅的客户端无法从事件得知曲目 | 初始与变化事件都带 URI 与 DIDL 元数据（新增回归测试） |
+| `verify-eventing.ps1` 结束时不退出 | 检查跑完后进程挂起 | 回调线程改为轮询 accept + 读超时 |
+| `renderer-check.ps1` 拼接相对 URL | 把规范的相对 `controlURL` 误判为非法 | 按描述 URL 解析 |
+| `media-server.js` 正斜杠 root 全 404 | 投送测试全部失败 | `path.resolve` 后再做包含检查 |
+| 本机无法验证 SSDP 发现 | 本机多播不自收 | 新增 `-Location` 跳过发现；发现由真实客户端日志证明 |
+| 报告将 0 次成功 NOTIFY 判为「通过」 | 验收表出现假阳性 | 事件订阅判定同时要求 SUBSCRIBE 与 NOTIFY 2xx |
+| 报告未按服务会话截取 | 旧会话数据混入本轮证据 | 默认只统计最近一次 `service starting` 之后；`-AllSessions` 可覆盖 |
+
+### 7.5 仍未验证
+
+- 真实控制端的音量/静音与事件订阅（投送已通过服务端，音乐未测）。
+- 画面出现与否、声音是否可听（需要人眼/人耳确认）。
+- 关闭 UI 后继续播放、重开 UI 恢复状态。
+- 封面与元数据展示（UI 未使用 `AlbumArtUri`）。
+- 网络中断恢复的真实拔插场景（§6.1）。
+
+### 7.6 已记录、本轮不修复的问题
+
+| # | 问题 | 证据 | 初步判断 |
+| --- | --- | --- | --- |
+| 1 | 真实客户端 GENA `NOTIFY` 全部失败 | SUBSCRIBE 3 次均被接受，初始 NOTIFY 均返回 HTTP 412；同日 14:13 另有 `timed out` | 可能因初始事件在 SUBSCRIBE 200 响应之前发出，客户端尚未登记 SID 而以 412 拒绝；需改为先响应再投递初始事件，并用同一客户端复测 |
+| 2 | 14:13 会话 `NOTIFY timed out` | 回调地址 `192.168.1.72:8081` 不可达 | 可能是客户端回调服务已停止，未确认 |
+| 3 | 音量/静音未被真实客户端调用 | 四个动作调用次数均为 0 | 无法证明第三方互操作，也不能判定为不支持 |
+| 4 | 本次没有音乐投送记录 | 唯一 `player loading` 为 videoItem | 需要再测一次音乐 |
+
+以上四项只记录，不在本轮修改；修复后必须用真实客户端重新生成证据表。

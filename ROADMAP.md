@@ -1,6 +1,6 @@
 # DlnRenderer 开发路线图
 
-> 本文件基于 **2026-10-21** 仓库真实状态审查（`main` @ `5ecc29e`）编写。
+> 本文件基于 **2026-10-21** 仓库真实状态审查（`main` @ `12be11d`，阶段 A 完成后修订）编写。
 > 所有结论尽量指向实际文件、测试或提交；无法从仓库证明的内容标记为 **待验证**。
 > 状态用词严格区分「代码存在」「自动化测试通过」「真实设备验收通过」——三者不等价。
 
@@ -53,7 +53,7 @@ DlnRenderer 是一个 **DLNA Media Renderer（DMR）**：它让手机、平板�
 | Named Pipe IPC（当前用户隔离） | 已实现且已验证 | `IpcServer.cs`；`IpcServerTests` |
 | UI 退出后继续播放、复用服务 | 已实现且已验证 | `RendererSession.cs`；真实手工验证（`docs/testing.md` §3.4） |
 
-自动化测试实测：**351 通过 / 0 失败 / 0 跳过**（Core 25、Player 20、Dlna 207、Service 99）。
+自动化测试实测：**369 通过 / 0 失败 / 0 跳过**（Core 25、Player 20、Dlna 218、Service 106）。
 
 ### 1.4 最重要的技术债务、风险与产品缺口
 
@@ -73,12 +73,12 @@ DlnRenderer 是一个 **DLNA Media Renderer（DMR）**：它让手机、平板�
    `docs/testing.md` §5.3 明确记录：本轮交付时服务日志中**没有任何手机投屏记录**
    （`SetAVTransportURI` 计数为 0）。协议实现完备，但互操作性未被真实客户端证明。
 
-4. **网络变化无处理**
-   搜索 `NetworkChange` / `NetworkAvailability`：`SsdpServer.cs` **零命中**。
-   网卡切换、Wi-Fi 断开/恢复后 SSDP 不会重新加入组播。
+4. **网络变化恢复未在真实拔插下验证**
+   `NetworkChange.NetworkAddressChanged` 已接入（阶段 A4），接口差异由纯函数计算，9 个单元测试覆盖；
+   但真实断开/恢复 Wi-Fi 需要管理员会话，尚未验证（`docs/testing.md` §6.1）。
 
-5. **日志无轮换**
-   `ServiceLog.cs` 无轮换/保留策略。长时间常驻会无限增长。
+5. ~~日志无轮换~~ **已解决（阶段 A5）**
+   按天保留 7 天，7 个单元测试 + 实测清理。
 
 6. **文档与代码脱节**
    `README.md` 仍写"GENA `SUBSCRIBE` 返回 501""RenderingControl 未实现""163 个测试"；
@@ -114,7 +114,7 @@ DlnRenderer 是一个 **DLNA Media Renderer（DMR）**：它让手机、平板�
 | 项 | 状态 | 说明 |
 | --- | --- | --- |
 | SSDP 应答与公告 | 已实现且已验证 | 6 个目标全应答，ST 回显，250 ms 去重 |
-| SSDP 网络接口变化 | 未实现 | 无 `NetworkChange` 监听；切换网络后需重启服务 |
+| SSDP 网络接口变化 | 已实现但未充分验证 | 监听 `NetworkAddressChanged` 并增量增删组播成员（A4）；真实拔插未验证 |
 | 设备描述 / SCPD | 已实现且已验证 | 默认命名空间、相对 URL、`X_DLNADOC` |
 | AVTransport 核心动作 | 已实现且已验证 | 11 个动作，含 `GetCurrentTransportActions` |
 | `SetNextAVTransportURI` / `Next` / `Previous` | 未实现 | 无播放队列设计；`NextURI` 恒为空字符串（诚实声明） |
@@ -210,7 +210,7 @@ DlnRenderer 是一个 **DLNA Media Renderer（DMR）**：它让手机、平板�
 | 项 | 状态 | 说明 |
 | --- | --- | --- |
 | 服务日志（文件） | 已实现且已验证 | `ServiceLog.cs`，`%LOCALAPPDATA%\DlnRenderer\logs` |
-| 日志轮换 | 未实现 | 无保留策略 |
+| 日志轮换 | 已实现且已验证 | 按天保留 7 天；7 个单元测试 + 实测清理（A5） |
 | mpv 日志转发 | 已实现且已验证 | `Program.cs` 订阅 `LogMessage` |
 | UI 诊断日志 | 已实现但未充分验证 | `DiagnosticsLog.cs` |
 | 设置持久化 | 未实现 | 设备名等只靠命令行参数 |
@@ -224,7 +224,7 @@ DlnRenderer 是一个 **DLNA Media Renderer（DMR）**：它让手机、平板�
 | GENA 回调 SSRF 防护 | 已实现且已验证 | `GenaCallbackPolicy`，含 IPv4-mapped 绕过防护 |
 | SOAP/DIDL XML 安全 | 已实现且已验证 | 禁用 DTD、限制体积 |
 | 订阅/客户端数量上限 | 已实现且已验证 | 64 订阅、每地址 8、8 并发通知、8 IPC 客户端 |
-| 网络变化恢复 | 未实现 | 见 2.1 |
+| 网络变化恢复 | 已实现但未充分验证 | 监听与增量组播已完成（A4），真实拔插未验证；见 2.1 |
 | 长时间播放稳定性 | 待调查 | 无 8 小时+ 实测记录 |
 | 异常恢复（服务崩溃） | 未实现 | 无看门狗/自动重启 |
 | 内存/句柄泄漏 | 部分实现 | 有释放测试，无长时间压测 |
@@ -328,7 +328,19 @@ DlnRenderer 是一个 **DLNA Media Renderer（DMR）**：它让手机、平板�
 **为什么现在做**：这是当前最大的"未知"。代码完备但从未被真实客户端使用过，
 任何协议细节错误（事件 XML 形状、SEQ 语义、音量通道）都只能在真机上暴露。
 
-**当前问题**：`docs/testing.md` §5.3 明确记录本轮交付时**没有任何手机投屏记录**。
+**当前问题**：`docs/testing.md` §5.3 记录上一轮交付时没有任何手机投屏记录；本轮补测后也只拿到发现证据。
+
+**当前进度（2026-10-21）**
+
+| 项 | 状态 | 依据 |
+| --- | --- | --- |
+| B3 日志取证 | 已完成 | 服务记录每次 NOTIFY 的 SID/SEQ/HTTP 状态/耗时；`stage-b-report.ps1` 生成验收表 |
+| 真实客户端发现 | 已有证据 | 4 台局域网设备共 73 次 M-SEARCH，服务应答 17 次（`docs/testing.md` §7.2） |
+| 视频投送 / 暂停 / 继续 / Seek / 停止 | **通过（服务端）** | `192.168.1.72` 完成投送与控制，实际加载 videoItem；画面需人眼确认 |
+| 音量 / 静音 | **客户端未发送** | RenderingControl 四个动作调用均为 0，无法证明第三方互操作 |
+| 事件订阅 | **失败** | SUBSCRIBE 3 次均被接受，初始 NOTIFY 全部 HTTP 412（`docs/testing.md` §7.6） |
+| 音乐投送 | 未发生 | 本次会话没有 audioItem |
+| B1 / B2 | **部分完成** | 视频链路通过；音乐、音量/静音、事件订阅、UI 退出仍待验证 |
 
 **任务与可交付物**
 
@@ -359,7 +371,7 @@ DlnRenderer 是一个 **DLNA Media Renderer（DMR）**：它让手机、平板�
 | 状态观察 | 客户端界面上的播放状态随操作变化（而非一直"播放中"） |
 | UI 退出 | 关闭 UI 后播放继续；重开 UI 状态正确 |
 
-**测试要求**：全部为人工验证；自动化部分已在阶段 5 的 351 个测试中覆盖，不重复。
+**测试要求**：全部为人工验证；自动化部分已在 369 个测试中覆盖，不重复。
 
 **DoD**：至少两个不同实现的控制端，验收表逐项有结论（通过/客户端不支持/失败）。
 失败项必须有后续任务编号。

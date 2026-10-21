@@ -4,7 +4,9 @@ const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const root = process.argv[2] || process.cwd();
+// path.resolve normalises separators: comparing a forward-slash root against path.join's
+// backslashes on Windows would make every file fail the containment check below.
+const root = path.resolve(process.argv[2] || process.cwd());
 const port = Number(process.argv[3] || 18777);
 
 const types = {
@@ -20,9 +22,10 @@ const types = {
 
 const server = http.createServer((req, res) => {
   const name = decodeURIComponent(new URL(req.url, "http://localhost").pathname).slice(1);
-  const file = path.join(root, name);
+  const file = path.resolve(root, name);
 
-  if (!file.startsWith(root) || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
+  const insideRoot = file === root || file.startsWith(root + path.sep);
+  if (!insideRoot || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
     res.writeHead(404, { "content-type": "text/plain" });
     res.end("not found");
     return;
