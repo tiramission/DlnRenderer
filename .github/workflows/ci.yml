@@ -33,15 +33,22 @@ jobs:
       - name: Restore
         run: dotnet restore DlnRenderer.sln
 
-      # WinUI 3 needs x64 explicitly: the App project is RID-specific and a plain build would
-      # otherwise hit AnyCPU. No libmpv is present, so the Player project warns instead of failing.
+      # Debug is the configuration the repository builds and tests with everywhere else
+      # (docs/testing.md, docs/development.md), and it is the one whose ReadyToRun setting the
+      # WinUI/AppSDK build honors without the R2R runtime package. A Release build here tried the
+      # ReadyToRun optimization step during `dotnet build` - ReadyToRun is a publish property, but
+      # the packaging target applies it to the build too - and failed on the runner with "a valid
+      # runtime package was not found". The Release publish path that produces a shippable binary
+      # is exercised by tools/package/build-dist.ps1, which passes an explicit -r win-x64; that
+      # stays out of CI because it needs libmpv and a real runtime. Platform=x64 keeps the
+      # RID-specific App off AnyCPU. No libmpv is present, so the Player project warns instead of
+      # failing, and playback integration tests skip rather than pass.
       - name: Build
-        run: dotnet build DlnRenderer.sln -c Release --no-restore -p:Platform=x64
+        run: dotnet build DlnRenderer.sln -c Debug --no-restore -p:Platform=x64
 
       - name: Test
-        # --no-build keeps the tested binaries identical to the built ones. Playback integration
-        # tests report as skipped, not passed, when libmpv is missing.
-        run: dotnet test DlnRenderer.sln -c Release --no-build -p:Platform=x64 --logger "console;verbosity=normal"
+        # --no-build keeps the tested binaries identical to the built ones.
+        run: dotnet test DlnRenderer.sln -c Debug --no-build -p:Platform=x64 --logger "console;verbosity=normal"
 
       # The packaging contract: whatever folder or package we hand out must carry LICENSE,
       # THIRD-PARTY-NOTICES.md and the license texts. Staging into a temp folder proves the
