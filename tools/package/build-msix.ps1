@@ -149,6 +149,11 @@ if (Test-Path -LiteralPath $assetsSource) {
     Copy-Item -Path $assetsSource -Destination $assetsTarget -Recurse -Force
 }
 
+# Legal files belong inside the package too: a user who installs the MSIX and never sees the
+# repository still has to receive the GPL text and the third-party notices.
+Write-Step "staging license and third-party notices"
+& (Join-Path $here 'stage-legal-files.ps1') -Destination $publishDir
+
 # --- 3. Verify the package layout ---------------------------------------------------
 Write-Step "verifying package layout"
 # The publish folder is exactly what ends up in the package, so this is the last cheap place to
@@ -165,7 +170,10 @@ $required = @(
     'Assets\Square44x44Logo.scale-200.png',
     'Assets\Wide310x150Logo.scale-200.png',
     'Assets\SplashScreen.scale-200.png',
-    'Assets\StoreLogo.png'
+    'Assets\StoreLogo.png',
+    'LICENSE',
+    'THIRD-PARTY-NOTICES.md',
+    'LICENSES\GPL-2.0-or-later.txt'
 )
 $missing = $required | Where-Object { -not (Test-Path -LiteralPath (Join-Path $publishDir $_)) }
 if ($missing) {

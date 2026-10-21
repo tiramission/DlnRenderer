@@ -65,21 +65,30 @@ $assetsSource = Join-Path $repoRoot 'src\DlnRenderer.App\Assets'
 if (Test-Path -LiteralPath $assetsSource) {
     $assetsTarget = Join-Path $OutputDirectory 'Assets'
     if (Test-Path -LiteralPath $assetsTarget) {
-        # A previous run can leave 'Assets' as a file (the app's embedded resource index),
-        # which would make the recursive copy fail.
-        Remove-Item -LiteralPath $assetsTarget -Force
+        # -Recurse is required: the App project usually leaves Assets as a directory (a previous
+        # publish also copies it loose), and Remove-Item without -Recurse throws "Object reference
+        # not set" on a directory. The same bug is documented and fixed in build-msix.ps1.
+        Remove-Item -LiteralPath $assetsTarget -Recurse -Force
     }
     Write-Step "copying app assets (window and tray icons)"
     Copy-Item -Path $assetsSource -Destination $assetsTarget -Recurse -Force
 }
-# 4. Verify what we claim to ship: a folder missing an exe, the native DLL or the icons is not a release.
+# 4. Legal files. GPL-2.0-or-later obligations travel with the artifacts, not with the git
+#    repository, so a folder that lacks LICENSE/THIRD-PARTY-NOTICES.md is not distributable.
+Write-Step "staging license and third-party notices"
+& (Join-Path $PSScriptRoot 'stage-legal-files.ps1') -Destination $OutputDirectory
+
+# 5. Verify what we claim to ship: a folder missing an exe, the native DLL or the icons is not a release.
 Write-Step "verifying output"
 $required = @(
     'DlnRenderer.exe',
     'DlnRenderer.Service.exe',
     'libmpv-2.dll',
     'Assets\AppIcon.ico',
-    'Assets\Square44x44Logo.scale-200.png'
+    'Assets\Square44x44Logo.scale-200.png',
+    'LICENSE',
+    'THIRD-PARTY-NOTICES.md',
+    'LICENSES\GPL-2.0-or-later.txt'
 )
 $missing = $required | Where-Object { -not (Test-Path -LiteralPath (Join-Path $OutputDirectory $_)) }
 if ($missing) { throw "incomplete distribution, missing: $($missing -join ', ')" }

@@ -172,9 +172,16 @@ docs/                       架构、开发、测试与许可证文档
 - [docs/packaging.md](docs/packaging.md) —— 分发渠道决策与两条渠道的差异
 - [docs/msix-assessment.md](docs/msix-assessment.md) —— MSIX 逐项可行性评估
 - [docs/licenses.md](docs/licenses.md) —— 依赖与许可证清单
+- [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) —— 随包第三方组件声明
 
 ## 许可证
 
-项目整体许可证尚未确定。当前使用的 libmpv Windows 二进制为 **GPL-2.0-or-later** 构建，
-仅存放于被忽略的本地目录、不随仓库或安装包分发。仓库尚未包含 `THIRD-PARTY-NOTICES`。
-分发前必须完成 [docs/licenses.md](docs/licenses.md) §4 列出的全部事项。
+本项目采用 **GPL-2.0-or-later**，全文见 [`LICENSE`](LICENSE)。选择与 libmpv 的许可证一致，
+理由见 [docs/architecture.md](docs/architecture.md) §17。
+
+分发包内含 `LICENSE`、`LICENSES/`（第三方许可证全文）与 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)，
+由 `tools/package/stage-legal-files.ps1` 在打包时写入。核对 libmpv 的实际构建与哈希：
+
+```powershell
+pwsh tools/verify-libmpv.ps1   # 打印版本、构建配置、许可证判定与 SHA-256
+```

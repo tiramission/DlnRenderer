@@ -1,0 +1,57 @@
+name: CI
+
+# Build and test only. Nothing here needs a real libmpv, a real control point or a network peer:
+# the player integration tests skip themselves when libmpv-2.dll is absent (TestSupport), which is
+# why this can run on a clean Windows runner. Real-device verification stays manual (docs/testing.md).
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          # global.json pins 10.0.402 with latestFeature; install the feature band, not the exact
+          # patch, so a runner image without that build still works.
+          dotnet-version: '10.0.x'
+
+      - name: Show toolchain
+        run: |
+          dotnet --info
+          dotnet --list-sdks
+
+      - name: Restore
+        run: dotnet restore DlnRenderer.sln
+
+      # WinUI 3 needs x64 explicitly: the App project is RID-specific and a plain build would
+      # otherwise hit AnyCPU. No libmpv is present, so the Player project warns instead of failing.
+      - name: Build
+        run: dotnet build DlnRenderer.sln -c Release --no-restore -p:Platform=x64
+
+      - name: Test
+        # --no-build keeps the tested binaries identical to the built ones. Playback integration
+        # tests report as skipped, not passed, when libmpv is missing.
+        run: dotnet test DlnRenderer.sln -c Release --no-build -p:Platform=x64 --logger "console;verbosity=normal"
+
+      # The packaging contract: whatever folder or package we hand out must carry LICENSE,
+      # THIRD-PARTY-NOTICES.md and the license texts. Staging into a temp folder proves the
+      # script and its inputs still work without building a 400 MB distribution.
+      - name: Verify legal files stage into a distribution
+        shell: pwsh
+        run: |
+          $target = Join-Path $env:RUNNER_TEMP 'legal-check'
+          ./tools/package/stage-legal-files.ps1 -Destination $target
+          $required = @('LICENSE', 'THIRD-PARTY-NOTICES.md', 'LICENSES/GPL-2.0-or-later.txt')
+          $missing = $required | Where-Object { -not (Test-Path -LiteralPath (Join-Path $target $_)) }
+          if ($missing) { throw "missing from staged distribution: $($missing -join ', ')" }
+          Write-Host "staged: $(Get-ChildItem $target -Recurse -File | Measure-Object | Select-Object -ExpandProperty Count) files"

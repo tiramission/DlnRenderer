@@ -305,15 +305,9 @@ unless built with `-Dgpl=false`, which makes it LGPLv2+”。本轮只使用头�
 sha256 `38acd030...`）的 `mpv-configuration` **同样不含** `-Dgpl=false`，即实际为 GPL 构建。
 结论：**不能以 NuGet 元数据判断 native 许可证**，必须以构建选项为准。
 
-**许可证策略（本轮决定）**：
-
-- 不修改项目整体许可证，不声明项目为 GPL。
-- 原生产物仅用于本机开发验证，**不随源码、安装包或发布物分发**。
-- 因此在完成下列任一选择前，本版本**不得标记为可发布**：
-  1. 采用 LGPL 构建（官方 CI 的 `-lgpl` 产物，或自行 `-Dgpl=false` 编译并保留构建脚本/源码归档）；
-  2. 明确接受 GPL-2.0-or-later，并准备对应源码、许可证与通知文件。
-- 若选择 GPL，安装包必须包含：libmpv 完整对应源码获取方式、GPL-2.0 全文、mpv 版权声明，
-  以及 FFmpeg/libass/libplacebo 等依赖的许可证与通知（见 `docs/licenses.md`）。
+**许可证策略**：阶段 1.5 时此处记录的是"暂不决定、原生产物不分发"。阶段 F 已作出选择：
+**项目采用 GPL-2.0-or-later，libmpv 随包分发**，理由、替代方案与重开条件见 §17.1。
+本节其余内容（二进制来源、指纹、GPL 判定依据）仍然有效，且是那次决策的事实基础。
 
 ### 10.2 播放器模块结构
 
@@ -809,3 +803,60 @@ UI 启动时按 `ServiceClient.ResolveServicePath()` 的优先级查找服务：
 两个问题：SSDP socket 进入 `TIME_WAIT` 导致新装的副本短时间内无法重新加入多播组；视频窗口
 与 named pipe 由服务自己持有，异常退出不会释放干净。因此脚本顺序是：
 IPC 请求 → 等待退出 → 仅在仍存活时 `Stop-Process` → 进程消失后才动文件（否则 DLL 被锁）。
+
+## 17. 阶段 F：许可证与可复现发布
+
+### 17.1 F1 决策：采用 GPL-2.0-or-later，libmpv 随包分发
+
+**结论**：项目采用 **GPL-2.0-or-later**；`libmpv-2.dll` 随绿色包与 MSIX 分发，不再"仅本机"。
+
+**两个选项与取舍**：
+
+| 路线 | 代价 | 结论 |
+| --- | --- | --- |
+| **A：GPL**（选中） | 随包提供对应源码或获取方式、GPL 全文、逐项组件声明 | 义务清晰，已实测的 277 种格式能力不受损 |
+| B：LGPL | 上游不提供 Windows `-Dgpl=false` 构建，需自行交叉编译；x264/x265 消失后必须重测格式矩阵 | 代价高于收益，§17.3 记录重开条件 |
+
+**为什么不是 LGPL**（§17.3）：阶段 D 已用 22 个自生成样例实测 277 种格式，其中 H.264/HEVC
+编解码依赖 x264/x265（二者均为 GPL）。改用 LGPL 构建意味着这部分能力缺失，须重跑矩阵、
+重写兼容性文档，而收益只是"可闭源分发"——本项目不打算闭源。
+
+### 17.2 GPL 义务的落实（F3/F4）
+
+| 义务 | 落实 |
+| --- | --- |
+| 项目自身 `LICENSE` | 根目录 `LICENSE`（GPL-2.0-or-later 全文） |
+| 逐项第三方组件声明 | `THIRD-PARTY-NOTICES.md`（36 项，含许可与依据链接） |
+| 许可证全文 | `LICENSES/`（13 份，GPL/LGPL/MIT/BSD/Apache/ISC/MPL/WTFPL/FTL/Zlib/curl） |
+| libmpv 对应源码（GPL §3） | §2.1：mpv commit `6a262d11f`、FFmpeg commit `8b3525e71`、构建配方，含 3 年书面提供承诺 |
+| 随包分发 | `stage-legal-files.ps1` 在 `build-dist` / `build-msix` 时写入并纳入必需文件清单 |
+
+**GPL 判定依据（实测）**：`tools/verify-libmpv.ps1` 读取 `mpv-configuration`，不含
+`-Dgpl=false`；二进制内含 x264/x265 构建标识 → FFmpeg 亦为 `--enable-gpl`。
+
+### 17.3 重开 LGPL 的条件与代价
+
+仅在以下情况重开：(1) 需要闭源或专有许可分发；(2) 上游开始提供经核实的 Windows
+LGPL 预编译产物。代价：自行交叉编译、保留构建脚本与源码归档、按阶段 D 方法重测格式
+矩阵（H.264/HEVC 能力变化最大）。
+
+### 17.4 可复现构建与产物校验（F5）
+
+- `tools/package/hash-release.ps1`：生成 `SHA256SUMS.txt`（LF、可被 `sha256sum -c` 消费）
+  与 `release-manifest.json`（版本、commit、libmpv 指纹）；`-Verify` 比对并以非零码报错。
+- `tools/package/verify-reproducible.ps1`：同状态构建两次，比较 86 个文件哈希，实测**全部
+  字节一致**。
+- 签名：当前仅 dev 证书（本机）；正式分发需 CA 证书，缺口记在 `docs/packaging.md`。
+
+### 17.5 CI（F6）
+
+`.github/workflows/ci.yml` 在 windows-latest 上 restore → build → test，并把
+`stage-legal-files.ps1` 跑一遍以守住"分发包必带法律文件"的契约。不涉及真实设备项，
+那些仍留在 `docs/testing.md` 的手工验收清单。
+
+### 17.6 剩余缺口（不阻塞"可分发"）
+
+1. VapourSynth / Lua / bzip2 三项未取到上游 LICENSE 文件（`THIRD-PARTY-NOTICES.md` §8）。
+2. 正式代码签名证书未获取（F5 签名部分）。
+
+**不在此做法律结论**，必要时咨询专业意见。
