@@ -36,7 +36,14 @@ public sealed class MpvPlayerIntegrationTests
 
         await player.LoadAsync(new MediaInfo(new Uri(wav)) { Title = "tone" }, timeout.Token);
 
-        var loaded = await WaitForAsync(player, s => s.State == PlaybackState.Paused, "paused after load");
+        // Duration is its own mpv property and can land a beat after Paused does - seen on the
+        // CI runner, where the status snapshot came back Paused with Duration still null. Wait for
+        // both rather than asserting on a snapshot that is allowed to lag; a duration that never
+        // arrives still times out, with this description.
+        var loaded = await WaitForAsync(
+            player,
+            s => s.State == PlaybackState.Paused && s.Duration is not null,
+            "paused after load with duration reported");
         Assert.Equal(MediaKind.Audio, loaded.MediaKind);
         Assert.NotNull(loaded.Duration);
         Assert.InRange(loaded.Duration!.Value.TotalSeconds, 5.5, 6.5);
@@ -85,7 +92,14 @@ public sealed class MpvPlayerIntegrationTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(40));
 
         await player.LoadAsync(new MediaInfo(new Uri(TestMedia.VideoFixturePath)), timeout.Token);
-        var loaded = await WaitForAsync(player, s => s.State == PlaybackState.Paused, "paused after load");
+        // Duration is its own mpv property and can land a beat after Paused does - seen on the
+        // CI runner, where the status snapshot came back Paused with Duration still null. Wait for
+        // both rather than asserting on a snapshot that is allowed to lag; a duration that never
+        // arrives still times out, with this description.
+        var loaded = await WaitForAsync(
+            player,
+            s => s.State == PlaybackState.Paused && s.Duration is not null,
+            "paused after load with duration reported");
 
         Assert.Equal(MediaKind.Video, loaded.MediaKind);
         Assert.InRange(loaded.Duration!.Value.TotalSeconds, 1.5, 2.5);
