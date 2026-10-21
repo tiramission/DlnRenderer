@@ -8,82 +8,283 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="d">
 
-    <ScrollViewer>
-        <StackPanel
-            MaxWidth="760"
-            Padding="24"
-            HorizontalAlignment="Left"
-            Spacing="16">
-            <TextBlock Style="{StaticResource TitleTextBlockStyle}" Text="设置" />
+    <!--
+        Windows 11 Settings layout: grouped cards of label/description rows, and a command bar pinned
+        to the bottom that states whether the page has unsaved changes. The bar is outside the
+        ScrollViewer on purpose - the save button must stay reachable however far the user scrolled.
+    -->
+    <Page.Resources>
+        <Style x:Key="SettingsCardStyle" TargetType="Border">
+            <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}" />
+            <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
+        </Style>
 
-            <InfoBar
-                IsClosable="False"
-                IsOpen="{x:Bind ViewModel.HasStatus, Mode=OneWay}"
-                Message="{x:Bind ViewModel.StatusText, Mode=OneWay}"
-                Severity="{x:Bind ViewModel.Severity, Mode=OneWay}" />
+        <Style x:Key="CardTitleStyle" TargetType="TextBlock" BasedOn="{StaticResource BodyStrongTextBlockStyle}">
+            <Setter Property="FontSize" Value="15" />
+        </Style>
 
-            <Border
-                Padding="20"
-                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                BorderThickness="1"
-                CornerRadius="8">
-                <StackPanel Spacing="18">
-                    <TextBox
-                        x:Name="DeviceNameBox"
-                        Header="设备名称"
-                        MaxLength="64"
-                        PlaceholderText="DlnRenderer"
-                        Text="{x:Bind ViewModel.DeviceName, Mode=TwoWay}" />
+        <Style x:Key="SecondaryTextStyle" TargetType="TextBlock" BasedOn="{StaticResource CaptionTextBlockStyle}">
+            <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+        </Style>
 
-                    <ToggleSwitch
-                        Header="开机启动"
-                        IsOn="{x:Bind ViewModel.StartWithWindows, Mode=TwoWay}"
-                        OffContent="关闭"
-                        OnContent="启动" />
+        <Style x:Key="RowTitleStyle" TargetType="TextBlock" BasedOn="{StaticResource BodyTextBlockStyle}" />
 
-                    <ToggleSwitch
-                        Header="关闭窗口时最小化到托盘"
-                        IsOn="{x:Bind ViewModel.CloseToTray, Mode=TwoWay}"
-                        OffContent="关闭窗口即退出界面"
-                        OnContent="保留在托盘，播放继续" />
+        <Style x:Key="RowDescriptionStyle" TargetType="TextBlock" BasedOn="{StaticResource SecondaryTextStyle}">
+            <Setter Property="Margin" Value="0,2,0,0" />
+            <Setter Property="MaxWidth" Value="560" />
+        </Style>
 
-                    <ToggleSwitch
-                        Header="硬件解码"
-                        IsOn="{x:Bind ViewModel.HardwareDecoding, Mode=TwoWay}"
-                        OffContent="软件解码"
-                        OnContent="自动（hwdec=auto-safe）" />
+        <Style x:Key="DividerStyle" TargetType="Border">
+            <Setter Property="Height" Value="1" />
+            <Setter Property="Margin" Value="20,0" />
+            <Setter Property="Background" Value="{ThemeResource DividerStrokeColorDefaultBrush}" />
+        </Style>
+    </Page.Resources>
 
-                    <TextBlock
-                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                        Text="设备名称与硬件解码在后台服务重启后生效；关闭窗口行为立即生效。"
-                        TextWrapping="Wrap" />
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
 
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <Button
-                            Click="OnSaveClick"
-                            Content="保存"
-                            Style="{StaticResource AccentButtonStyle}" />
-                        <Button Click="OnRestartClick" Content="重启后台服务" />
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <!--
+                Centred column: the window can be maximised, and a left-pinned 820px column leaves an
+                empty half that reads as a layout bug.
+            -->
+            <StackPanel
+                MaxWidth="820"
+                Padding="32,28,32,32"
+                HorizontalAlignment="Center"
+                Spacing="20">
+
+                <StackPanel Spacing="4">
+                    <TextBlock Style="{StaticResource TitleTextBlockStyle}" Text="设置" />
+                    <TextBlock Style="{StaticResource SecondaryTextStyle}" Text="更改保存在本机，后台服务与界面共用同一份配置。" />
+                </StackPanel>
+
+                <InfoBar
+                    IsClosable="False"
+                    IsOpen="{x:Bind ViewModel.HasStatus, Mode=OneWay}"
+                    Message="{x:Bind ViewModel.StatusText, Mode=OneWay}"
+                    Severity="{x:Bind ViewModel.Severity, Mode=OneWay}" />
+
+                <!--  Device  -->
+                <Border Style="{StaticResource SettingsCardStyle}">
+                    <StackPanel>
+                        <StackPanel Padding="20,16,20,12" Spacing="2">
+                            <TextBlock Style="{StaticResource CardTitleStyle}" Text="设备" />
+                            <TextBlock Style="{StaticResource SecondaryTextStyle}" Text="控制端在设备列表里看到的信息。" />
+                        </StackPanel>
+                        <Border Style="{StaticResource DividerStyle}" />
+
+                        <Grid Padding="20,14" ColumnSpacing="20">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Style="{StaticResource RowTitleStyle}" Text="设备名称" />
+                                <TextBlock Style="{StaticResource RowDescriptionStyle}" Text="最多 64 个字符。保存后需重启后台服务才会广播新名称。" />
+                            </StackPanel>
+                            <TextBox
+                                x:Name="DeviceNameBox"
+                                Grid.Column="1"
+                                Width="280"
+                                VerticalAlignment="Center"
+                                AutomationProperties.Name="设备名称"
+                                MaxLength="64"
+                                PlaceholderText="DlnRenderer"
+                                Text="{x:Bind ViewModel.DeviceName, Mode=TwoWay}"
+                                TextChanged="OnDeviceNameChanged" />
+                        </Grid>
                     </StackPanel>
-                </StackPanel>
-            </Border>
+                </Border>
 
-            <Border
-                Padding="20"
-                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                BorderThickness="1"
-                CornerRadius="8">
-                <StackPanel Spacing="8">
-                    <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="退出" />
-                    <TextBlock
-                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                        Text="退出会同时停止后台服务，正在播放的媒体会中断。仅关闭窗口不会停止播放。"
-                        TextWrapping="Wrap" />
-                    <Button Click="OnExitClick" Content="退出整个应用" />
-                </StackPanel>
-            </Border>
-        </StackPanel>
-    </ScrollViewer>
+                <!--  Startup and window behaviour  -->
+                <Border Style="{StaticResource SettingsCardStyle}">
+                    <StackPanel>
+                        <StackPanel Padding="20,16,20,12" Spacing="2">
+                            <TextBlock Style="{StaticResource CardTitleStyle}" Text="启动与窗口" />
+                            <TextBlock Style="{StaticResource SecondaryTextStyle}" Text="界面如何启动、关窗之后做什么。" />
+                        </StackPanel>
+                        <Border Style="{StaticResource DividerStyle}" />
+
+                        <Grid Padding="20,14" ColumnSpacing="20">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Style="{StaticResource RowTitleStyle}" Text="开机启动" />
+                                <TextBlock Style="{StaticResource RowDescriptionStyle}" Text="登录 Windows 后自动打开界面，后台服务随之启动。" />
+                            </StackPanel>
+                            <ToggleSwitch
+                                Grid.Column="1"
+                                VerticalAlignment="Center"
+                                AutomationProperties.Name="开机启动"
+                                IsOn="{x:Bind ViewModel.StartWithWindows, Mode=TwoWay}"
+                                OffContent="关闭"
+                                OnContent="启动" />
+                        </Grid>
+                        <Border Style="{StaticResource DividerStyle}" />
+
+                        <Grid Padding="20,14" ColumnSpacing="20">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Style="{StaticResource RowTitleStyle}" Text="关闭窗口时最小化到托盘" />
+                                <TextBlock Style="{StaticResource RowDescriptionStyle}" Text="关闭后播放继续，可从托盘图标重新打开界面。" />
+                            </StackPanel>
+                            <ToggleSwitch
+                                Grid.Column="1"
+                                VerticalAlignment="Center"
+                                AutomationProperties.Name="关闭窗口时最小化到托盘"
+                                IsOn="{x:Bind ViewModel.CloseToTray, Mode=TwoWay}"
+                                OffContent="关闭窗口即退出界面"
+                                OnContent="保留在托盘" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!--  Playback  -->
+                <Border Style="{StaticResource SettingsCardStyle}">
+                    <StackPanel>
+                        <StackPanel Padding="20,16,20,12" Spacing="2">
+                            <TextBlock Style="{StaticResource CardTitleStyle}" Text="播放" />
+                            <TextBlock Style="{StaticResource SecondaryTextStyle}" Text="作用于后台服务的 libmpv 实例，保存后需重启服务。" />
+                        </StackPanel>
+                        <Border Style="{StaticResource DividerStyle}" />
+
+                        <Grid Padding="20,14" ColumnSpacing="20">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Style="{StaticResource RowTitleStyle}" Text="硬件解码" />
+                                <TextBlock Style="{StaticResource RowDescriptionStyle}" Text="交给 GPU 解码以降低 CPU 占用。个别驱动上出现花屏或黑屏时，可关闭并重启服务。" />
+                            </StackPanel>
+                            <ToggleSwitch
+                                Grid.Column="1"
+                                VerticalAlignment="Center"
+                                AutomationProperties.Name="硬件解码"
+                                IsOn="{x:Bind ViewModel.HardwareDecoding, Mode=TwoWay}"
+                                OffContent="软件解码"
+                                OnContent="自动（hwdec=auto-safe）" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!--  Data, diagnostics and exit  -->
+                <Border Style="{StaticResource SettingsCardStyle}">
+                    <StackPanel>
+                        <StackPanel Padding="20,16,20,12" Spacing="2">
+                            <TextBlock Style="{StaticResource CardTitleStyle}" Text="数据与诊断" />
+                            <TextBlock Style="{StaticResource SecondaryTextStyle}" Text="配置、设备标识与服务日志都在这一个目录里。" />
+                        </StackPanel>
+                        <Border Style="{StaticResource DividerStyle}" />
+
+                        <Grid Padding="20,14" ColumnSpacing="20">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Style="{StaticResource RowTitleStyle}" Text="数据目录" />
+                                <TextBlock
+                                    Style="{StaticResource RowDescriptionStyle}"
+                                    IsTextSelectionEnabled="True"
+                                    Text="{x:Bind ViewModel.DataFolder}" />
+                            </StackPanel>
+                            <Button
+                                Grid.Column="1"
+                                VerticalAlignment="Center"
+                                AutomationProperties.Name="打开数据目录"
+                                Click="OnOpenDataFolderClick"
+                                Content="打开文件夹" />
+                        </Grid>
+                        <Border Style="{StaticResource DividerStyle}" />
+
+                        <Grid Padding="20,14" ColumnSpacing="20">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Style="{StaticResource RowTitleStyle}" Text="版本" />
+                                <TextBlock Style="{StaticResource RowDescriptionStyle}">
+                                    <Run Text="{x:Bind ViewModel.VersionText, Mode=OneWay}" />
+                                    <Run Text="·" />
+                                    <Run Text="{x:Bind ViewModel.DeploymentText, Mode=OneWay}" />
+                                </TextBlock>
+                            </StackPanel>
+                        </Grid>
+                        <Border Style="{StaticResource DividerStyle}" />
+
+                        <Grid Padding="20,14" ColumnSpacing="20">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Style="{StaticResource RowTitleStyle}" Text="退出整个应用" />
+                                <TextBlock Style="{StaticResource RowDescriptionStyle}" Text="会同时停止后台服务，正在播放的媒体随之中断。只关闭窗口不会停止播放。" />
+                            </StackPanel>
+                            <Button
+                                Grid.Column="1"
+                                VerticalAlignment="Center"
+                                AutomationProperties.Name="退出整个应用"
+                                Click="OnExitClick"
+                                Content="退出" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+
+        <!--  Command bar: always visible, and never claims a save that did not happen.  -->
+        <Border
+            Grid.Row="1"
+            Padding="32,12"
+            Background="{ThemeResource LayerFillColorDefaultBrush}"
+            BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
+            BorderThickness="0,1,0,0">
+            <Grid ColumnSpacing="12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <TextBlock
+                    VerticalAlignment="Center"
+                    Style="{StaticResource SecondaryTextStyle}"
+                    Text="{x:Bind ViewModel.FooterHint, Mode=OneWay}" />
+
+                <Button
+                    Grid.Column="1"
+                    AutomationProperties.Name="重启后台服务"
+                    Click="OnRestartClick"
+                    Content="重启后台服务" />
+
+                <Button
+                    Grid.Column="2"
+                    AutomationProperties.Name="保存设置"
+                    Click="OnSaveClick"
+                    IsEnabled="{x:Bind ViewModel.CanSave, Mode=OneWay}"
+                    Style="{StaticResource AccentButtonStyle}">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon FontSize="14" Glyph="&#xE74E;" />
+                        <TextBlock Text="保存" />
+                    </StackPanel>
+                </Button>
+            </Grid>
+        </Border>
+    </Grid>
 </Page>

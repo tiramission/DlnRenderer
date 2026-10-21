@@ -1,3 +1,4 @@
+using System.Reflection;
 using CommunityToolkit.Mvvm.ComponentModel;
 using DlnRenderer.Core.Ipc;
 using DlnRenderer.Core.Settings;
@@ -37,25 +38,104 @@ public sealed class SettingsViewModel : ObservableObject
     public string DeviceName
     {
         get => _deviceName;
-        set => SetProperty(ref _deviceName, value);
+        set
+        {
+            if (SetProperty(ref _deviceName, value))
+            {
+                NotifyDirty();
+            }
+        }
     }
 
     public bool StartWithWindows
     {
         get => _startWithWindows;
-        set => SetProperty(ref _startWithWindows, value);
+        set
+        {
+            if (SetProperty(ref _startWithWindows, value))
+            {
+                NotifyDirty();
+            }
+        }
     }
 
     public bool CloseToTray
     {
         get => _closeToTray;
-        set => SetProperty(ref _closeToTray, value);
+        set
+        {
+            if (SetProperty(ref _closeToTray, value))
+            {
+                NotifyDirty();
+            }
+        }
     }
 
     public bool HardwareDecoding
     {
         get => _hardwareDecoding;
-        set => SetProperty(ref _hardwareDecoding, value);
+        set
+        {
+            if (SetProperty(ref _hardwareDecoding, value))
+            {
+                NotifyDirty();
+            }
+        }
+    }
+
+    /// <summary>
+    /// True when the page differs from what is on disk. The save button and the footer hint both
+    /// read this, so an edit that cannot be saved (validation) never looks applied.
+    /// </summary>
+    public bool IsDirty
+    {
+        get
+        {
+            var saved = App.Settings;
+            return !string.Equals((DeviceName ?? string.Empty).Trim(), saved.DeviceName, StringComparison.Ordinal)
+                || StartWithWindows != saved.StartWithWindows
+                || CloseToTray != saved.CloseToTray
+                || HardwareDecoding != saved.HardwareDecoding;
+        }
+    }
+
+    public bool CanSave => IsDirty && !Busy;
+
+    /// <summary>One line for the command bar: what the state of the page is, in words.</summary>
+    public string FooterHint
+    {
+        get
+        {
+            if (Busy)
+            {
+                return "正在处理…";
+            }
+
+            return IsDirty ? "有未保存的更改" : "所有更改已保存";
+        }
+    }
+
+    /// <summary>Folder holding settings.json, the device UUID and the service logs.</summary>
+    public string DataFolder { get; } = Path.GetDirectoryName(SettingsStore.DefaultPath) ?? string.Empty;
+
+    /// <summary>Which deployment shape is running; the settings that apply differ between them.</summary>
+    public string DeploymentText => StartupRegistration.IsPackaged ? "MSIX 用户级包" : "绿色包 / 开发运行";
+
+    public string VersionText
+    {
+        get
+        {
+            var version = typeof(App).Assembly
+                .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+            if (string.IsNullOrWhiteSpace(version))
+            {
+                version = typeof(App).Assembly.GetName().Version?.ToString(3) ?? "0.1.0";
+            }
+
+            // The SDK appends the source revision ("0.1.0+abc123"); the page shows the version only.
+            var plus = version!.IndexOf('+', StringComparison.Ordinal);
+            return plus > 0 ? version[..plus] : version;
+        }
     }
 
     public string StatusText
@@ -75,7 +155,13 @@ public sealed class SettingsViewModel : ObservableObject
     public bool Busy
     {
         get => _busy;
-        private set => SetProperty(ref _busy, value);
+        private set
+        {
+            if (SetProperty(ref _busy, value))
+            {
+                NotifyDirty();
+            }
+        }
     }
 
     /// <summary>
@@ -123,6 +209,7 @@ public sealed class SettingsViewModel : ObservableObject
 
             App.ReloadSettings();
             DeviceName = settings.DeviceName;
+            NotifyDirty();
             Show("已保存。设备名称与硬件解码将在重启服务后生效。", isError: false);
         }
         finally
@@ -178,6 +265,16 @@ public sealed class SettingsViewModel : ObservableObject
     }
 
     public void DismissStatus() => HasStatus = false;
+
+    /// <summary>Shows a failure raised by the page itself, e.g. a folder that cannot be opened.</summary>
+    public void ReportError(string message) => Show(message, isError: true);
+
+    private void NotifyDirty()
+    {
+        OnPropertyChanged(nameof(IsDirty));
+        OnPropertyChanged(nameof(CanSave));
+        OnPropertyChanged(nameof(FooterHint));
+    }
 
     private void Show(string message, bool isError)
     {
