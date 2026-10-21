@@ -10,7 +10,7 @@ dotnet build DlnRenderer.sln -c Debug
 dotnet test DlnRenderer.sln -c Debug
 ```
 
-实测结果：**328 通过 / 0 失败，0 跳过**（Core 25、Player 20、Dlna 207、Service 76）。
+实测结果：**351 通过 / 0 失败，0 跳过**（Core 25、Player 20、Dlna 207、Service 99）。
 
 连续 3 次完整运行均为 0 失败（`dotnet test DlnRenderer.sln -c Debug --no-build`）。
 

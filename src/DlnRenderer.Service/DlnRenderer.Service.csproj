@@ -23,4 +23,12 @@
     <ProjectReference Include="..\DlnRenderer.Player\DlnRenderer.Player.csproj" />
   </ItemGroup>
 
+  <!--
+    Command-line parsing is internal but is the service's only public-facing contract besides DAEMON
+    behaviour, so the tests need to reach it. Same pattern as DlnRenderer.Dlna.
+  -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="DlnRenderer.Service.Tests" />
+  </ItemGroup>
+
 </Project>

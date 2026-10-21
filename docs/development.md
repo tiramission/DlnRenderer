@@ -42,7 +42,7 @@ dotnet build DlnRenderer.sln -c Debug
 dotnet test DlnRenderer.sln -c Debug
 ```
 
-预期结果（本轮实测）：构建 0 错误 / 0 警告，测试 **163 通过 / 0 失败**。
+预期结果（本轮实测）：构建 0 警告 / 0 错误，测试 **351 通过 / 0 失败**（Core 25、Player 20、Dlna 207、Service 99）。
 
 测试分两类：
 
