@@ -47,6 +47,9 @@ public static class IpcCommands
     public const string Seek = "Seek";
     public const string SetVolume = "SetVolume";
     public const string SetMute = "SetMute";
+
+    /// <summary>Stops the service process. Only sent when the user exits the whole application.</summary>
+    public const string Shutdown = "Shutdown";
 }
 
 /// <summary>State reported by the service; UI and protocol layers both project from this.</summary>

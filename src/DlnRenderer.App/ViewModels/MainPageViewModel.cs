@@ -4,6 +4,9 @@ using DlnRenderer.Core.Ipc;
 using DlnRenderer.Core.Models;
 using DlnRenderer.Services;
 using Microsoft.UI.Dispatching;
+using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Imaging;
 
 namespace DlnRenderer.ViewModels;
 
@@ -14,18 +17,26 @@ namespace DlnRenderer.ViewModels;
 /// </summary>
 /// <remarks>
 /// Snapshots arrive on the pipe read thread and are marshalled through the captured dispatcher.
-/// Commands are fire-and-forget through <see cref="ServiceClient"/>; the resulting state comes back
-/// as a pushed snapshot, so the UI never guesses what happened.
+/// Commands are fire-and-forget through the shared <see cref="App.Client"/>; the resulting state
+/// comes back as a pushed snapshot, so the UI never guesses what happened.
 /// </remarks>
-public sealed class MainPageViewModel : ObservableObject, IAsyncDisposable
+public sealed class MainPageViewModel : ObservableObject, IDisposable
 {
+    /// <summary>How often a disconnected page retries the service.</summary>
+    private static readonly TimeSpan ReconnectInterval = TimeSpan.FromSeconds(5);
+
     private readonly DispatcherQueue _dispatcher = DispatcherQueue.GetForCurrentThread();
-    private readonly ServiceClient _client = new();
+    private readonly ServiceClient _client;
+    private readonly CancellationTokenSource _lifetime = new();
+    private int _reconnectRunning;
+    private bool _disposed;
 
     private string _serviceText = "正在连接后台服务…";
     private string _statusText = "待机";
     private string _detailText = "等待 DLNA 控制端推送媒体";
     private string _titleText = "未加载媒体";
+    private string _artistText = string.Empty;
+    private string _statusGlyph = "\uE71A";
     private string _positionText = "00:00";
     private string _durationText = "00:00";
     private double _positionSeconds;
@@ -37,9 +48,13 @@ public sealed class MainPageViewModel : ObservableObject, IAsyncDisposable
     private bool _hasMedia;
     private bool _isPlaying;
     private bool _isConnected;
+    private ImageSource? _coverImage;
+    private Uri? _coverUri;
 
     public MainPageViewModel()
     {
+        // Shared with the tray icon and the settings page: one pipe, one connection.
+        _client = App.Client;
         _client.SnapshotChanged += OnSnapshotChanged;
         _client.Faulted += OnClientFaulted;
     }
@@ -51,6 +66,12 @@ public sealed class MainPageViewModel : ObservableObject, IAsyncDisposable
     public string DetailText { get => _detailText; private set => SetProperty(ref _detailText, value); }
 
     public string TitleText { get => _titleText; private set => SetProperty(ref _titleText, value); }
+
+    /// <summary>Artist and album, joined only when the control point supplied them.</summary>
+    public string ArtistText { get => _artistText; private set => SetProperty(ref _artistText, value); }
+
+    /// <summary>Segoe Fluent glyph matching the transport state.</summary>
+    public string StatusGlyph { get => _statusGlyph; private set => SetProperty(ref _statusGlyph, value); }
 
     public string PositionText { get => _positionText; private set => SetProperty(ref _positionText, value); }
 
@@ -69,17 +90,30 @@ public sealed class MainPageViewModel : ObservableObject, IAsyncDisposable
 
     public string ErrorText { get => _errorText; private set => SetProperty(ref _errorText, value); }
 
-    public bool HasMedia { get => _hasMedia; private set => SetProperty(ref _hasMedia, value); }
+    public bool HasMedia { get => _hasMedia; private set { if (SetProperty(ref _hasMedia, value)) { OnPropertyChanged(nameof(IsIdle)); } } }
+
+    public bool IsIdle => !HasMedia;
 
     public bool IsPlaying { get => _isPlaying; private set => SetProperty(ref _isPlaying, value); }
 
     public bool IsConnected { get => _isConnected; private set => SetProperty(ref _isConnected, value); }
+
+    /// <summary>Cover art from the control point's DIDL metadata, null when it supplied none.</summary>
+    public ImageSource? CoverImage { get => _coverImage; private set => SetProperty(ref _coverImage, value); }
 
     /// <summary>Connects to the service, starting it when it is not already running.</summary>
     public async Task InitializeAsync()
     {
         var connected = await _client.ConnectAsync(startIfMissing: true).ConfigureAwait(true);
         ApplyConnection(connected);
+        if (connected)
+        {
+            ApplySnapshot(_client.Snapshot);
+        }
+        else
+        {
+            StartReconnectLoop();
+        }
     }
 
     public Task PlayAsync() => SendAsync(IpcCommands.Play);
@@ -93,6 +127,9 @@ public sealed class MainPageViewModel : ObservableObject, IAsyncDisposable
     public Task SetVolumeAsync(double volume) => SendAsync(IpcCommands.SetVolume, volume: (int)Math.Round(volume));
 
     public Task SetMuteAsync(bool muted) => SendAsync(IpcCommands.SetMute, muted: muted);
+
+    /// <summary>Flips the player mute state from the current snapshot.</summary>
+    public Task ToggleMuteAsync() => SetMuteAsync(!IsMuted);
 
     private async Task SendAsync(string command, double? seekSeconds = null, int? volume = null, bool? muted = null)
     {
@@ -129,14 +166,81 @@ public sealed class MainPageViewModel : ObservableObject, IAsyncDisposable
         {
             ApplyConnection(false);
             ReportError(reason);
+            StartReconnectLoop();
         });
+    }
+
+    /// <summary>
+    /// Retries the service while the page is open, so a restarted service comes back on its own.
+    /// </summary>
+    /// <remarks>
+    /// Only one loop runs at a time: a burst of faults (pipe dropped and a failed restart) must not
+    /// spawn one retry loop per event.
+    /// </remarks>
+    private void StartReconnectLoop()
+    {
+        if (_disposed || Interlocked.Exchange(ref _reconnectRunning, 1) == 1)
+        {
+            return;
+        }
+
+        _ = Task.Run(ReconnectLoopAsync);
+    }
+
+    private async Task ReconnectLoopAsync()
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(ReconnectInterval);
+            while (await timer.WaitForNextTickAsync(_lifetime.Token).ConfigureAwait(false))
+            {
+                if (IsConnected)
+                {
+                    return;
+                }
+
+                bool connected;
+                try
+                {
+                    connected = await _client.ConnectAsync(startIfMissing: true, _lifetime.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+
+                if (!connected)
+                {
+                    continue;
+                }
+
+                var snapshot = _client.Snapshot;
+                _dispatcher.TryEnqueue(() =>
+                {
+                    ApplyConnection(true);
+                    ApplySnapshot(snapshot);
+                });
+                return;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _reconnectRunning, 0);
+        }
     }
 
     private void ApplyConnection(bool connected)
     {
         IsConnected = connected;
         ServiceText = connected ? "后台服务：已连接" : "后台服务：未连接";
+        OnPropertyChanged(nameof(ServiceSeverity));
     }
+
+    /// <summary>Disconnected is a warning rather than neutral information.</summary>
+    public InfoBarSeverity ServiceSeverity => IsConnected ? InfoBarSeverity.Informational : InfoBarSeverity.Warning;
 
     private void ApplySnapshot(RendererSnapshot snapshot)
     {
@@ -146,30 +250,37 @@ public sealed class MainPageViewModel : ObservableObject, IAsyncDisposable
             : $"后台服务：已连接 · 发现未开启（{snapshot.DeviceName ?? "DlnRenderer"}）";
 
         var status = snapshot.Playback;
-        HasMedia = status.Media is not null;
+        var media = status.Media;
+
+        HasMedia = media is not null;
         IsPlaying = status.State == PlaybackState.Playing;
 
-        StatusText = status.State switch
+        (StatusText, StatusGlyph) = status.State switch
         {
-            PlaybackState.Playing => "播放中",
-            PlaybackState.Paused => "已暂停",
-            PlaybackState.Buffering => "缓冲中",
-            PlaybackState.Transitioning => "正在加载",
-            PlaybackState.Error => "播放错误",
-            PlaybackState.Stopped => HasMedia ? "已停止" : "待机",
-            _ => "待机",
+            PlaybackState.Playing => ("播放中", "\uE768"),
+            PlaybackState.Paused => ("已暂停", "\uE769"),
+            PlaybackState.Buffering => ("缓冲中", "\uE895"),
+            PlaybackState.Transitioning => ("正在加载", "\uE895"),
+            PlaybackState.Error => ("播放错误", "\uE783"),
+            PlaybackState.Stopped => (HasMedia ? "已停止" : "待机", "\uE71A"),
+            _ => ("待机", "\uE71A"),
         };
 
-        TitleText = status.Media?.Title
-            ?? status.Media?.MediaUri.ToString()
-            ?? "未加载媒体";
+        TitleText = media?.Title ?? media?.MediaUri.ToString() ?? "未加载媒体";
+        ArtistText = string.Join(
+            " · ",
+            new[] { media?.Artist, media?.Album }.Where(value => !string.IsNullOrWhiteSpace(value)));
 
         DetailText = status.MediaKind switch
         {
             MediaKind.Video => "视频 · 画面显示在渲染器窗口中",
             MediaKind.Audio => "音频",
-            _ => snapshot.DiscoveryActive ? "等待 DLNA 控制端推送媒体" : "等待 DLNA 控制端推送媒体",
+            _ => snapshot.DiscoveryActive
+                ? $"等待投屏 · 设备名 {snapshot.DeviceName ?? "DlnRenderer"}"
+                : "等待 DLNA 控制端推送媒体",
         };
+
+        UpdateCover(media?.CoverUri);
 
         PositionText = Format(status.Position);
         DurationText = status.Duration is { } duration ? Format(duration) : "00:00";
@@ -197,6 +308,36 @@ public sealed class MainPageViewModel : ObservableObject, IAsyncDisposable
             $"snapshot state={status.State} kind={status.MediaKind} pos={status.Position} dur={status.Duration} discovery={snapshot.DiscoveryActive}");
     }
 
+    /// <summary>
+    /// Rebuilds the cover image only when the URI actually changed, so a position tick does not
+    /// recreate the bitmap every quarter second.
+    /// </summary>
+    private void UpdateCover(Uri? coverUri)
+    {
+        if (coverUri == _coverUri)
+        {
+            return;
+        }
+
+        _coverUri = coverUri;
+        if (coverUri is null || !coverUri.IsAbsoluteUri)
+        {
+            CoverImage = null;
+            return;
+        }
+
+        try
+        {
+            CoverImage = new BitmapImage(coverUri);
+        }
+        catch (Exception ex)
+        {
+            // A malformed or unsupported cover URL must not break the status display.
+            DiagnosticsLog.Write($"cover art rejected ({coverUri}): {ex.Message}");
+            CoverImage = null;
+        }
+    }
+
     private void ReportError(string message)
     {
         HasError = true;
@@ -209,5 +350,18 @@ public sealed class MainPageViewModel : ObservableObject, IAsyncDisposable
             ? value.ToString(@"h\:mm\:ss", CultureInfo.InvariantCulture)
             : value.ToString(@"mm\:ss", CultureInfo.InvariantCulture);
 
-    public ValueTask DisposeAsync() => _client.DisposeAsync();
+    /// <summary>
+    /// Detaches from the shared client. The client itself is owned by <see cref="App"/> and must
+    /// outlive the page, otherwise navigating to settings would drop the tray's connection.
+    /// </summary>
+    public void Dispose()
+    {
+        _disposed = true;
+        _client.SnapshotChanged -= OnSnapshotChanged;
+        _client.Faulted -= OnClientFaulted;
+
+        // Cancelled but not disposed: an in-flight connection attempt may still read the token, and
+        // a completed attempt would then observe ObjectDisposedException on the way out.
+        _lifetime.Cancel();
+    }
 }

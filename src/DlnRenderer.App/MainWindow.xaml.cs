@@ -1,18 +1,16 @@
+using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
-
-// To learn more about WinUI, the WinUI project structure,
-// and more about our project templates, see: http://aka.ms/winui-project-info.
+using Microsoft.UI.Xaml.Controls;
 
 namespace DlnRenderer;
 
 /// <summary>
-/// The application window. This hosts a Frame that displays pages. Add your
-/// UI and logic to MainPage.xaml / MainPage.xaml.cs instead of here so you
-/// can use Page features such as navigation events and the Loaded lifecycle.
+/// The application window: a title bar, a compact navigation pane and a frame for the pages.
 /// </summary>
 /// <remarks>
-/// Closing this window closes only the UI. The renderer service keeps running, together with
-/// playback and DLNA discovery, by design; use the service's own shutdown path to stop it.
+/// Closing the window hides it when the user chose "close to tray"; playback and discovery live in
+/// the service and are unaffected either way. Only <see cref="App.ExitApplicationAsync"/> closes the
+/// window for real, because it also stops the service.
 /// </remarks>
 public sealed partial class MainWindow : Window
 {
@@ -24,8 +22,43 @@ public sealed partial class MainWindow : Window
         SetTitleBar(AppTitleBar);
 
         AppWindow.SetIcon("Assets/AppIcon.ico");
+        AppWindow.Closing += OnClosing;
 
-        // Navigate the root frame to the main page on startup.
         RootFrame.Navigate(typeof(MainPage));
+        Navigation.SelectedItem = Navigation.MenuItems[0];
+    }
+
+    private void OnClosing(AppWindow sender, AppWindowClosingEventArgs args)
+    {
+        if (App.IsExiting)
+        {
+            return;
+        }
+
+        if (App.Settings.CloseToTray)
+        {
+            // Hide instead of closing: the tray icon is the way back.
+            args.Cancel = true;
+            sender.Hide();
+        }
+    }
+
+    private void OnNavigationSelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
+    {
+        if (args.SelectedItemContainer?.Tag is not string tag)
+        {
+            return;
+        }
+
+        var target = tag switch
+        {
+            "settings" => typeof(SettingsPage),
+            _ => typeof(MainPage),
+        };
+
+        if (RootFrame.CurrentSourcePageType != target)
+        {
+            RootFrame.Navigate(target);
+        }
     }
 }

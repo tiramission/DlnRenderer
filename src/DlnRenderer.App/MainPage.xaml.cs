@@ -5,8 +5,8 @@ using Microsoft.UI.Xaml.Controls;
 namespace DlnRenderer;
 
 /// <summary>
-/// Minimal status page. Playback and DLNA discovery run in the renderer service, so this page only
-/// shows the pushed state and forwards transport commands over the local pipe.
+/// Player page. Playback and DLNA discovery run in the renderer service, so this page only shows the
+/// pushed state and forwards transport commands over the local pipe.
 /// </summary>
 public sealed partial class MainPage : Page
 {
@@ -20,6 +20,7 @@ public sealed partial class MainPage : Page
     {
         InitializeComponent();
         Loaded += OnLoaded;
+        Unloaded += OnUnloaded;
         ViewModel.PropertyChanged += OnViewModelPropertyChanged;
     }
 
@@ -41,6 +42,19 @@ public sealed partial class MainPage : Page
             // A silent, permanently-disconnected UI is worse than a visible error.
             DiagnosticsLog.Write($"service connect failed: {ex}");
         }
+
+        // The sliders are not bound: their values are pushed in code so a user drag and a snapshot
+        // update cannot feed each other. The first snapshot may carry the values the view model
+        // already had (100% volume), which raises no property change, so sync once explicitly.
+        SyncControls();
+    }
+
+    private void OnUnloaded(object sender, RoutedEventArgs e)
+    {
+        // Navigating to settings unloads this page; staying subscribed would leak one handler per
+        // visit and keep updating a view nobody can see.
+        ViewModel.PropertyChanged -= OnViewModelPropertyChanged;
+        ViewModel.Dispose();
     }
 
     private async void OnPlayClick(object sender, RoutedEventArgs e) => await ViewModel.PlayAsync();
@@ -48,6 +62,8 @@ public sealed partial class MainPage : Page
     private async void OnPauseClick(object sender, RoutedEventArgs e) => await ViewModel.PauseAsync();
 
     private async void OnStopClick(object sender, RoutedEventArgs e) => await ViewModel.StopAsync();
+
+    private async void OnMuteClick(object sender, RoutedEventArgs e) => await ViewModel.ToggleMuteAsync();
 
     private async void OnPositionSliderChanged(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
     {
@@ -80,17 +96,31 @@ public sealed partial class MainPage : Page
         switch (e.PropertyName)
         {
             case nameof(MainPageViewModel.PositionSeconds):
-                _suppressPositionSync = true;
-                PositionSlider.Maximum = Math.Max(1, ViewModel.DurationSeconds);
-                PositionSlider.Value = ViewModel.PositionSeconds;
-                _suppressPositionSync = false;
+            case nameof(MainPageViewModel.DurationSeconds):
+                SyncPosition();
                 break;
             case nameof(MainPageViewModel.Volume):
-            case nameof(MainPageViewModel.DurationSeconds):
                 _suppressVolumeSync = true;
                 VolumeSlider.Value = ViewModel.Volume;
                 _suppressVolumeSync = false;
                 break;
         }
+    }
+
+    private void SyncControls()
+    {
+        SyncPosition();
+
+        _suppressVolumeSync = true;
+        VolumeSlider.Value = ViewModel.Volume;
+        _suppressVolumeSync = false;
+    }
+
+    private void SyncPosition()
+    {
+        _suppressPositionSync = true;
+        PositionSlider.Maximum = Math.Max(1, ViewModel.DurationSeconds);
+        PositionSlider.Value = ViewModel.PositionSeconds;
+        _suppressPositionSync = false;
     }
 }

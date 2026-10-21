@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Page
+    x:Class="DlnRenderer.SettingsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:local="using:DlnRenderer"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <ScrollViewer>
+        <StackPanel
+            MaxWidth="760"
+            Padding="24"
+            HorizontalAlignment="Left"
+            Spacing="16">
+            <TextBlock Style="{StaticResource TitleTextBlockStyle}" Text="设置" />
+
+            <InfoBar
+                IsClosable="False"
+                IsOpen="{x:Bind ViewModel.HasStatus, Mode=OneWay}"
+                Message="{x:Bind ViewModel.StatusText, Mode=OneWay}"
+                Severity="{x:Bind ViewModel.Severity, Mode=OneWay}" />
+
+            <Border
+                Padding="20"
+                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                CornerRadius="8">
+                <StackPanel Spacing="18">
+                    <TextBox
+                        x:Name="DeviceNameBox"
+                        Header="设备名称"
+                        MaxLength="64"
+                        PlaceholderText="DlnRenderer"
+                        Text="{x:Bind ViewModel.DeviceName, Mode=TwoWay}" />
+
+                    <ToggleSwitch
+                        Header="开机启动"
+                        IsOn="{x:Bind ViewModel.StartWithWindows, Mode=TwoWay}"
+                        OffContent="关闭"
+                        OnContent="启动" />
+
+                    <ToggleSwitch
+                        Header="关闭窗口时最小化到托盘"
+                        IsOn="{x:Bind ViewModel.CloseToTray, Mode=TwoWay}"
+                        OffContent="关闭窗口即退出界面"
+                        OnContent="保留在托盘，播放继续" />
+
+                    <ToggleSwitch
+                        Header="硬件解码"
+                        IsOn="{x:Bind ViewModel.HardwareDecoding, Mode=TwoWay}"
+                        OffContent="软件解码"
+                        OnContent="自动（hwdec=auto-safe）" />
+
+                    <TextBlock
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        Text="设备名称与硬件解码在后台服务重启后生效；关闭窗口行为立即生效。"
+                        TextWrapping="Wrap" />
+
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button
+                            Click="OnSaveClick"
+                            Content="保存"
+                            Style="{StaticResource AccentButtonStyle}" />
+                        <Button Click="OnRestartClick" Content="重启后台服务" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <Border
+                Padding="20"
+                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                CornerRadius="8">
+                <StackPanel Spacing="8">
+                    <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="退出" />
+                    <TextBlock
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        Text="退出会同时停止后台服务，正在播放的媒体会中断。仅关闭窗口不会停止播放。"
+                        TextWrapping="Wrap" />
+                    <Button Click="OnExitClick" Content="退出整个应用" />
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</Page>

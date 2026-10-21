@@ -20,11 +20,22 @@ public sealed class ServiceClient : IAsyncDisposable
     private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(10);
 
+    /// <summary>
+    /// Idle interval between keep-alive requests.
+    /// </summary>
+    /// <remarks>
+    /// The server drops a connection that sends nothing for 30 seconds, so a UI that is merely
+    /// watching a cast would be disconnected. Must stay well below that watchdog.
+    /// </remarks>
+    private static readonly TimeSpan KeepAliveInterval = TimeSpan.FromSeconds(10);
+
     private readonly SemaphoreSlim _sendGate = new(1, 1);
+    private readonly SemaphoreSlim _connectGate = new(1, 1);
     private readonly CancellationTokenSource _cts = new();
 
     private NamedPipeClientStream? _pipe;
     private Task? _readLoop;
+    private Task? _keepAliveLoop;
     private Process? _ownedService;
 
     public event EventHandler<RendererSnapshot>? SnapshotChanged;
@@ -41,6 +52,21 @@ public sealed class ServiceClient : IAsyncDisposable
     /// could not be reached; <paramref name="error"/> then carries a user-readable reason.
     /// </summary>
     public async Task<bool> ConnectAsync(bool startIfMissing, CancellationToken cancellationToken = default)
+    {
+        // The reconnection timer and a user command may both try to connect; serialising this keeps
+        // a second pipe (and a second snapshot stream) from being opened.
+        await _connectGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await ConnectCoreAsync(startIfMissing, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _connectGate.Release();
+        }
+    }
+
+    private async Task<bool> ConnectCoreAsync(bool startIfMissing, CancellationToken cancellationToken)
     {
         if (IsConnected)
         {
@@ -97,9 +123,12 @@ public sealed class ServiceClient : IAsyncDisposable
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(RequestTimeout);
 
-        await _sendGate.WaitAsync(timeout.Token).ConfigureAwait(false);
+        var acquired = false;
         try
         {
+            await _sendGate.WaitAsync(timeout.Token).ConfigureAwait(false);
+            acquired = true;
+
             await IpcFraming.WriteAsync(
                 pipe,
                 new IpcMessage
@@ -115,12 +144,20 @@ public sealed class ServiceClient : IAsyncDisposable
         }
         catch (Exception ex) when (ex is IOException or ObjectDisposedException or OperationCanceledException)
         {
-            HandleDisconnect($"发送命令失败：{ex.Message}");
+            // A cancellation caused by disposing the client is expected, not a fault to report.
+            if (!_cts.IsCancellationRequested)
+            {
+                HandleDisconnect($"发送命令失败：{ex.Message}");
+            }
+
             return null;
         }
         finally
         {
-            _sendGate.Release();
+            if (acquired)
+            {
+                _sendGate.Release();
+            }
         }
 
         // The response is observed by the read loop, which updates Snapshot; callers simply read it
@@ -146,7 +183,36 @@ public sealed class ServiceClient : IAsyncDisposable
 
         _pipe = pipe;
         _readLoop = Task.Run(() => ReadLoopAsync(pipe, _cts.Token));
+        _keepAliveLoop = Task.Run(() => KeepAliveLoopAsync(_cts.Token));
         return true;
+    }
+
+    /// <summary>
+    /// Keeps an idle connection open and refreshes the snapshot when no event arrived.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="IpcCommands.GetStatus"/> is used deliberately instead of a bespoke ping: it is an
+    /// already validated, side-effect-free command whose response carries the current state, so a
+    /// lull in pushes cannot leave the window showing stale data.
+    /// </remarks>
+    private async Task KeepAliveLoopAsync(CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(KeepAliveInterval);
+        try
+        {
+            while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+            {
+                if (!IsConnected)
+                {
+                    return;
+                }
+
+                await SendAsync(IpcCommands.GetStatus, cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
     }
 
     private async Task ReadLoopAsync(NamedPipeClientStream pipe, CancellationToken cancellationToken)
@@ -279,11 +345,16 @@ public sealed class ServiceClient : IAsyncDisposable
             _pipe = null;
         }
 
-        if (_readLoop is not null)
+        foreach (var loop in new[] { _readLoop, _keepAliveLoop })
         {
+            if (loop is null)
+            {
+                continue;
+            }
+
             try
             {
-                await _readLoop.ConfigureAwait(false);
+                await loop.ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -293,6 +364,7 @@ public sealed class ServiceClient : IAsyncDisposable
         // Deliberately do NOT kill _ownedService: the service outlives the UI by design.
         _ownedService?.Dispose();
         _sendGate.Dispose();
+        _connectGate.Dispose();
         _cts.Dispose();
     }
 }

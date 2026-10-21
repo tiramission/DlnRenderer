@@ -1,4 +1,5 @@
 using System.Net;
+using DlnRenderer.Core.Settings;
 using DlnRenderer.Service;
 
 namespace DlnRenderer.Service.Tests;
@@ -149,6 +150,53 @@ public class ServiceStartupOptionsTests
         Assert.False(options.HardwareDecoding);
         Assert.Equal("Bedroom", options.FriendlyName);
         Assert.Equal(19000, options.HttpPort);
+    }
+
+    [Fact]
+    public void Stored_settings_fill_values_that_were_not_given_on_the_command_line()
+    {
+        Assert.True(ServiceStartupOptions.TryParse([], out var options, out _));
+
+        var applied = options.ApplySettings(new RendererSettings
+        {
+            DeviceName = "客厅",
+            HardwareDecoding = false,
+        });
+
+        Assert.Equal("客厅", applied.FriendlyName);
+        Assert.False(applied.HardwareDecoding);
+    }
+
+    [Fact]
+    public void An_explicit_device_name_beats_stored_settings()
+    {
+        Assert.True(ServiceStartupOptions.TryParse(["--device-name", "Bedroom"], out var options, out _));
+
+        var applied = options.ApplySettings(new RendererSettings { DeviceName = "客厅" });
+
+        Assert.Equal("Bedroom", applied.FriendlyName);
+    }
+
+    [Fact]
+    public void No_hwdec_beats_stored_settings()
+    {
+        Assert.True(ServiceStartupOptions.TryParse(["--no-hwdec"], out var options, out _));
+
+        var applied = options.ApplySettings(new RendererSettings { HardwareDecoding = true });
+
+        Assert.False(applied.HardwareDecoding);
+    }
+
+    [Fact]
+    public void Stored_settings_do_not_touch_flags_they_do_not_own()
+    {
+        Assert.True(ServiceStartupOptions.TryParse(["--http-port", "19000", "--no-ssdp"], out var options, out _));
+
+        var applied = options.ApplySettings(new RendererSettings { DeviceName = "Kitchen" });
+
+        Assert.Equal(19000, applied.HttpPort);
+        Assert.False(applied.Ssdp);
+        Assert.Equal("Kitchen", applied.FriendlyName);
     }
 
     [Fact]

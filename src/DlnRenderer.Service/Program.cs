@@ -1,4 +1,5 @@
 using System.Net;
+using DlnRenderer.Core.Settings;
 using DlnRenderer.Dlna;
 using DlnRenderer.Player.Mpv;
 using DlnRenderer.Service.Hosting;
@@ -20,6 +21,10 @@ internal static class Program
             Console.Error.WriteLine(ServiceStartupOptions.Usage);
             return 2;
         }
+
+        // The UI writes settings; the service reads them at start. Command-line flags still win,
+        // so a developer can override without editing the user's file.
+        options = options.ApplySettings(new SettingsStore().Load());
 
         var log = new ServiceLog(options.LogPath);
         var shutdown = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -87,6 +92,7 @@ internal static class Program
         DeviceIdentity.Save(ServicePaths.DeviceStateFile, uuid, options.FriendlyName);
 
         log.Write($"service starting (pid {Environment.ProcessId}, udn uuid:{uuid:D})");
+        log.Write($"settings: device name '{options.FriendlyName}', hwdec={options.HardwareDecoding}");
 
         var presenter = await VideoPresenter.StartAsync().ConfigureAwait(false);
         running.Presenter = presenter;
@@ -218,7 +224,10 @@ internal sealed record ServiceStartupOptions
         "Usage: DlnRenderer.Service [--http-port N] [--no-ssdp] [--device-name NAME] " +
         "[--listen-address IP] [--log PATH] [--exit-after SECONDS] [--no-hwdec]";
 
-    public string FriendlyName { get; init; } = "DlnRenderer";
+    public string FriendlyName { get; init; } = RendererSettings.DefaultDeviceName;
+
+    /// <summary>True when <c>--device-name</c> was supplied, so settings must not override it.</summary>
+    public bool DeviceNameSpecified { get; init; }
 
     /// <summary>
     /// Stable default HTTP port. A fixed port keeps the advertised LOCATION identical across
@@ -232,6 +241,9 @@ internal sealed record ServiceStartupOptions
     public bool Ssdp { get; init; } = true;
 
     public bool HardwareDecoding { get; init; } = true;
+
+    /// <summary>True when <c>--no-hwdec</c> was supplied, so settings must not override it.</summary>
+    public bool HardwareDecodingSpecified { get; init; }
 
     public IPAddress? ListenAddress { get; init; }
 
@@ -264,6 +276,20 @@ internal sealed record ServiceStartupOptions
     }
 
     /// <summary>
+    /// Fills the options that were not given on the command line from persisted settings.
+    /// </summary>
+    /// <remarks>
+    /// Explicit flags always win: the UI starts the service without flags, while a developer or a
+    /// diagnostic script may need to override a stored value for one run without editing it.
+    /// </remarks>
+    public ServiceStartupOptions ApplySettings(RendererSettings settings)
+        => this with
+        {
+            FriendlyName = DeviceNameSpecified ? FriendlyName : settings.DeviceName,
+            HardwareDecoding = HardwareDecodingSpecified ? HardwareDecoding : settings.HardwareDecoding,
+        };
+
+    /// <summary>
     /// Applies one command-line argument.
     /// </summary>
     /// <param name="args">Full argument list.</param>
@@ -291,7 +317,7 @@ internal sealed record ServiceStartupOptions
                 return true;
 
             case "--no-hwdec":
-                updated = current with { HardwareDecoding = false };
+                updated = current with { HardwareDecoding = false, HardwareDecodingSpecified = true };
                 return true;
 
             case "--no-log":
@@ -317,7 +343,7 @@ internal sealed record ServiceStartupOptions
                     return false;
                 }
 
-                updated = current with { FriendlyName = name.Trim() };
+                updated = current with { FriendlyName = name.Trim(), DeviceNameSpecified = true };
                 return true;
 
             case "--listen-address":

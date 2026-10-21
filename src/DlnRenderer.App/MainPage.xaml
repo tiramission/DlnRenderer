@@ -21,41 +21,67 @@
             IsClosable="False"
             IsOpen="True"
             Message="{x:Bind ViewModel.ServiceText, Mode=OneWay}"
-            Severity="Informational" />
+            Severity="{x:Bind ViewModel.ServiceSeverity, Mode=OneWay}" />
 
-        <Border
-            Grid.Row="1"
-            MinHeight="240"
-            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-            BorderThickness="1"
-            CornerRadius="8">
-            <StackPanel
-                HorizontalAlignment="Center"
+        <Grid Grid.Row="1" ColumnSpacing="24">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <!--  Cover art from DIDL-Lite; the glyph stays visible when the control point sent none.  -->
+            <Border
+                Width="180"
+                Height="180"
                 VerticalAlignment="Center"
-                Spacing="8">
-                <FontIcon
-                    FontSize="40"
+                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                CornerRadius="8">
+                <Grid>
+                    <FontIcon
+                        FontSize="44"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        Glyph="&#xE8B8;" />
+                    <Image
+                        Source="{x:Bind ViewModel.CoverImage, Mode=OneWay}"
+                        Stretch="UniformToFill" />
+                </Grid>
+            </Border>
+
+            <StackPanel
+                Grid.Column="1"
+                VerticalAlignment="Center"
+                Spacing="6">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <FontIcon
+                        FontSize="14"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        Glyph="{x:Bind ViewModel.StatusGlyph, Mode=OneWay}" />
+                    <TextBlock
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        Text="{x:Bind ViewModel.StatusText, Mode=OneWay}" />
+                </StackPanel>
+
+                <TextBlock
+                    MaxLines="2"
+                    Style="{StaticResource TitleTextBlockStyle}"
+                    Text="{x:Bind ViewModel.TitleText, Mode=OneWay}"
+                    TextTrimming="CharacterEllipsis" />
+
+                <TextBlock
                     Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                    Glyph="&#xE7F4;" />
+                    Text="{x:Bind ViewModel.ArtistText, Mode=OneWay}"
+                    TextTrimming="CharacterEllipsis" />
+
                 <TextBlock
-                    HorizontalAlignment="Center"
-                    Style="{StaticResource SubtitleTextBlockStyle}"
-                    Text="{x:Bind ViewModel.StatusText, Mode=OneWay}" />
-                <TextBlock
-                    HorizontalAlignment="Center"
                     Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                     Text="{x:Bind ViewModel.DetailText, Mode=OneWay}"
-                    TextAlignment="Center" />
+                    TextWrapping="Wrap" />
             </StackPanel>
-        </Border>
+        </Grid>
 
         <StackPanel Grid.Row="2" Spacing="12">
-            <TextBlock
-                Style="{StaticResource SubtitleTextBlockStyle}"
-                Text="{x:Bind ViewModel.TitleText, Mode=OneWay}"
-                TextTrimming="CharacterEllipsis" />
-
             <Grid ColumnSpacing="12">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
@@ -68,6 +94,7 @@
                 <Slider
                     x:Name="PositionSlider"
                     Grid.Column="1"
+                    AutomationProperties.Name="播放进度"
                     Maximum="1"
                     Minimum="0"
                     StepFrequency="0.1"
@@ -80,20 +107,33 @@
 
             <StackPanel Orientation="Horizontal" Spacing="8">
                 <Button
+                    AutomationProperties.Name="播放"
                     Click="OnPlayClick"
                     ToolTipService.ToolTip="播放">
                     <FontIcon FontSize="14" Glyph="&#xE768;" />
                 </Button>
                 <Button
+                    AutomationProperties.Name="暂停"
                     Click="OnPauseClick"
                     ToolTipService.ToolTip="暂停">
                     <FontIcon FontSize="14" Glyph="&#xE769;" />
                 </Button>
                 <Button
+                    AutomationProperties.Name="停止"
                     Click="OnStopClick"
                     ToolTipService.ToolTip="停止">
                     <FontIcon FontSize="14" Glyph="&#xE71A;" />
                 </Button>
+
+                <ToggleButton
+                    x:Name="MuteButton"
+                    AutomationProperties.Name="静音"
+                    Click="OnMuteClick"
+                    IsChecked="{x:Bind ViewModel.IsMuted, Mode=OneWay}"
+                    ToolTipService.ToolTip="静音 / 取消静音">
+                    <FontIcon FontSize="14" Glyph="&#xE767;" />
+                </ToggleButton>
+
                 <TextBlock
                     Margin="16,0,0,0"
                     VerticalAlignment="Center"
@@ -101,6 +141,7 @@
                 <Slider
                     x:Name="VolumeSlider"
                     Width="140"
+                    AutomationProperties.Name="音量"
                     Maximum="100"
                     Minimum="0"
                     ValueChanged="OnVolumeSliderChanged" />

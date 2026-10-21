@@ -11,6 +11,15 @@ namespace DlnRenderer.Service.Ipc;
 public sealed class IpcServer : IAsyncDisposable
 {
     private const int MaxClients = 8;
+
+    /// <summary>
+    /// Drops a client that has sent nothing for 30 seconds.
+    /// </summary>
+    /// <remarks>
+    /// A client that only watches state (the UI) must send a keep-alive at least this often; the UI
+    /// does so with <c>GetStatus</c> every 10 seconds. Raising this instead would only delay
+    /// noticing a client that died without closing the pipe.
+    /// </remarks>
     private static readonly TimeSpan ReadTimeout = TimeSpan.FromSeconds(30);
 
     private readonly IRendererControl _session;
