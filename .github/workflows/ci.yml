@@ -41,6 +41,24 @@ jobs:
         shell: pwsh
         run: ./scripts/fetch-libmpv.ps1 -Download
 
+      # The window lifecycle tests generate their own clips with ffmpeg, and the runner image does
+      # not ship it. choco is preinstalled; the PATH entry is appended explicitly because the job's
+      # environment does not pick up a machine-PATH change made moments earlier. The version print
+      # is the guard: a wrong install path fails here with one clear message instead of seven tests
+      # failing later with "cannot find ffmpeg".
+      - name: Install ffmpeg (window lifecycle tests generate clips with it)
+        shell: pwsh
+        run: |
+          choco install ffmpeg -y --no-progress
+          $bin = 'C:\ProgramData\chocolatey\lib\ffmpeg\tools\bin'
+          if (-not (Test-Path (Join-Path $bin 'ffmpeg.exe'))) {
+              $found = Get-ChildItem 'C:\ProgramData\chocolatey\lib\ffmpeg' -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+              if (-not $found) { throw 'ffmpeg.exe not found after choco install' }
+              $bin = $found.DirectoryName
+          }
+          echo $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & (Join-Path $bin 'ffmpeg.exe') -version
+
       - name: Restore
         run: dotnet restore DlnRenderer.sln
 
@@ -60,7 +78,14 @@ jobs:
         # --no-build keeps the tested binaries identical to the built ones. With libmpv fetched
         # above the player-backed tests execute; a run without that step reports them as skipped
         # with a message naming the script, never as passes.
-        run: dotnet test DlnRenderer.sln -c Debug --no-build -p:Platform=x64 --logger "console;verbosity=normal"
+        #
+        # One test is excluded: MediaCompatibilityTests.Hardware_decoding_is_used_when_the_machine_
+        # supports_it asserts that auto-safe picks a hardware decoder, which the runner's VM cannot
+        # satisfy - dxva2 initialisation fails and mpv falls back to software. It is not a product
+        # regression; the same test passes on a real GPU machine (stage D, docs/testing.md), and its
+        # sibling test covering the software-fallback path does run here. A one-line name match
+        # keeps the exclusion auditable instead of hiding a whole fixture class.
+        run: dotnet test DlnRenderer.sln -c Debug --no-build -p:Platform=x64 --logger "console;verbosity=normal" --filter "FullyQualifiedName!~Hardware_decoding_is_used_when_the_machine_supports_it"
 
       # The packaging contract: whatever folder or package we hand out must carry LICENSE,
       # THIRD-PARTY-NOTICES.md and the license texts. Staging into a temp folder proves the

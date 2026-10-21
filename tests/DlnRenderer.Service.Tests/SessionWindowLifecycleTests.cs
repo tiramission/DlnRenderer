@@ -44,7 +44,7 @@ public class SessionWindowLifecycleTests : IDisposable
         }
     }
 
-    [MpvFact]
+    [MpvFFmpegFact]
     public async Task Loading_media_does_not_take_the_screen_and_playing_does()
     {
         var media = CreateVideo();
@@ -76,7 +76,7 @@ public class SessionWindowLifecycleTests : IDisposable
         Assert.Equal("fullscreen", ctx.Presenter.PresentationState);
     }
 
-    [MpvFact]
+    [MpvFFmpegFact]
     public async Task Pause_keeps_the_overlay_and_stop_takes_it_down()
     {
         var media = CreateVideo();
@@ -102,7 +102,7 @@ public class SessionWindowLifecycleTests : IDisposable
         Assert.True(IsWindow(window));
     }
 
-    [MpvFact]
+    [MpvFFmpegFact]
     public async Task Playing_to_the_end_hides_the_overlay()
     {
         var media = CreateVideo(seconds: 2);
@@ -117,7 +117,7 @@ public class SessionWindowLifecycleTests : IDisposable
         await WaitUntil(() => !ctx.Presenter.IsVisible, "hidden after end of media");
     }
 
-    [MpvFact]
+    [MpvFFmpegFact]
     public async Task Switching_media_reuses_the_same_window()
     {
         var first = CreateVideo();
@@ -139,7 +139,7 @@ public class SessionWindowLifecycleTests : IDisposable
         Assert.Equal(child, ctx.Presenter.ChildHandle);
     }
 
-    [MpvFact]
+    [MpvFFmpegFact]
     public async Task Repeated_play_and_stop_keep_the_window_consistent()
     {
         var media = CreateVideo();
@@ -175,7 +175,7 @@ public class SessionWindowLifecycleTests : IDisposable
         Assert.Equal("fullscreen", ctx.Presenter.PresentationState);
     }
 
-    [MpvFact]
+    [MpvFFmpegFact]
     public async Task A_failed_load_leaves_no_overlay_behind()
     {
 
@@ -192,7 +192,7 @@ public class SessionWindowLifecycleTests : IDisposable
         Assert.False(ctx.Presenter.IsVisible, "a failed load must not leave a blank fullscreen window");
     }
 
-    [MpvFact]
+    [MpvFFmpegFact]
     public async Task Pause_and_seek_do_not_drop_topmost()
     {
         var media = CreateVideo();
@@ -210,7 +210,7 @@ public class SessionWindowLifecycleTests : IDisposable
         Assert.True(ctx.Presenter.IsTopmost, "seek and pause must not drop the overlay out of the topmost band");
     }
 
-    [MpvFact]
+    [MpvFFmpegFact]
     public async Task Snapshot_reports_the_same_state_the_overlay_follows()
     {
         var media = CreateVideo();

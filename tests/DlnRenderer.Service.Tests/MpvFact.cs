@@ -23,3 +23,38 @@ public sealed class MpvFactAttribute : FactAttribute
         }
     }
 }
+
+/// <summary>
+/// A fact that needs ffmpeg as well, because the test generates its own media clips with it.
+/// </summary>
+/// <remarks>
+/// xunit can only skip at discovery, so the ffmpeg check lives in an attribute rather than in the
+/// test body. Before this existed the lifecycle tests said "skipped when ffmpeg is missing" in a
+/// comment but actually threw from Process.Start, which is how a runner without ffmpeg turned
+/// seven tests red instead of skipping them.
+/// </remarks>
+public sealed class MpvFFmpegFactAttribute : FactAttribute
+{
+    public MpvFFmpegFactAttribute()
+    {
+        if (!MpvRuntime.IsAvailable())
+        {
+            Skip = $"libmpv-2.dll not found at {MpvRuntime.ExpectedPath}. Run scripts/fetch-libmpv.ps1.";
+            return;
+        }
+
+        if (!HasFfmpeg())
+        {
+            Skip = "ffmpeg not found on PATH; these tests generate their clips with it. Install ffmpeg to run them.";
+        }
+    }
+
+    /// <summary>Looks for ffmpeg.exe on PATH, the same way the test would start it.</summary>
+    private static bool HasFfmpeg()
+    {
+        var path = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+        return path
+            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+            .Any(directory => File.Exists(Path.Combine(directory.Trim(), "ffmpeg.exe")));
+    }
+}
