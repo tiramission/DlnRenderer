@@ -735,9 +735,10 @@ WinUI/AppSDK 的构建目标会把 R2R 优化带进 `dotnet build`，runner 上�
 
 ### 12.5b 发布工作流（`release.yml`）
 
-独立于 `ci.yml`，手动触发，构建绿色包 + MSIX 并开 GitHub Release。实跑 `39712214577`（2026-10-22）
-全部 21 步通过，产出 `v0.1.0`；下载回来的资产哈希逐字节对上，MSIX 在本机装成功
-（`Status: Ok`）。完整记录与证书步骤见 [`docs/packaging.md`](packaging.md) §7。
+独立于 `ci.yml`，手动触发，构建绿色包 + MSIX 并开 GitHub Release。实跑 `39713113975`（2026-10-22）
+全部步骤通过、**零 annotation**，产出 `v0.1.0`；下载回来的资产 `sha256sum -c` 全部 `OK`，
+信任自带的 `.cer` 后签名 `Valid`，MSIX 在本机装成功（`Status: Ok`）。
+完整记录与证书步骤见 [`docs/packaging.md`](packaging.md) §7。
 
 迭代中暴露的两个真问题（与 CI 主工作流同源：**不要把"看起来成功"当成功**）：
 
@@ -745,6 +746,7 @@ WinUI/AppSDK 的构建目标会把 R2R 优化带进 `dotnet build`，runner 上�
 | --- | --- |
 | `makeappx is not available through winapp (1)` | `makeappx /?` 成功时也返回退出码 1；按退出码判定会误判可用工具链为损坏。改为先看输出再判 |
 | `Get-AuthenticodeSignature` 报 `UnknownError` | dev 证书不在根存储，签名**本身有效**；旧代码把"未信任"当作失败。现在断言签名者指纹等于使用的证书 |
+| `upload-artifact@v5` 仍报 node20 弃用 | 靠大版本号推测目标 Node 版本是错的：v4/v5 都是 node20，v6 才是 node24。改为读 tag 的 `action.yml` 核实 |
 
 ### 12.6 CI 不覆盖
 

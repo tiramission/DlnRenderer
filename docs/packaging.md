@@ -158,17 +158,21 @@ Import-Certificate -FilePath .\DlnRenderer-dev.cer -CertStoreLocation Cert:\Loca
 Add-AppxPackage -Path .\DlnRenderer-0.1.0-win-x64.msix
 ```
 
-### 7.5 v0.1.0 实测（2026-10-22，CI run `39712214577`）
+### 7.5 v0.1.0 实测（2026-10-22，CI run `39713113975`）
 
 | 检查 | 结果 |
 | --- | --- |
-| workflow 全部 21 步 | ✅ |
+| workflow 全部步骤 | ✅，**零 annotation** |
 | GitHub Release `v0.1.0`（prerelease） | ✅ 6 个资产 |
-| 下载后重算 5 个资产的 SHA-256 | ✅ 与 `SHA256SUMS-assets.txt` 逐字节一致 |
-| MSIX 签名者指纹 = 发布 `.cer` 指纹 | ✅ `6ED67D3F…` |
+| 下载后 `sha256sum -c` 重算 | ✅ `OK`；GitHub 自报的 asset digest 也一致 |
+| MSIX 签名者指纹 = 发布 `.cer` 指纹 | ✅ `9C8E3007…` |
 | 信任 `.cer` 后签名状态 | ✅ `UnknownError` → `Valid` |
-| `Add-AppxPackage` 安装发布包 | ✅ `Status: Ok`，版本 `0.1.0.0` |
+| `Add-AppxPackage` 安装**发布后的**包 | ✅ `Status: Ok`，版本 `0.1.0.0` |
+| 清理（卸载 + 移除证书信任） | ✅ 残留包 0，根存储中 AppPublisher 证书 0 |
 | 绿色包 | ✅ 211.1 MB，86 个文件，含 libmpv 与法律文件 |
+
+每次运行都会生成**新的**证书（指纹随运行变化），所以上面的指纹只对应那一次 run；
+用到别的 run 的资产时必须用那次自带的 `.cer`。
 
 **未覆盖**：干净机器（无 .NET 10 桌面运行时、无 Windows App Runtime）的安装体验；
 ARM64；CA 签名。发布说明里已如实声明这些未知项。
