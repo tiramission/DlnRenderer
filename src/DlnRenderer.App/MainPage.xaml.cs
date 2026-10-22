@@ -24,9 +24,16 @@ namespace DlnRenderer;
 /// </remarks>
 public sealed partial class MainPage : Page
 {
+    /// <summary>
+    /// How long the picture may be gone before fullscreen is given up, so a media switch does not
+    /// drop the user out of it.
+    /// </summary>
+    private static readonly TimeSpan EndOfCastGrace = TimeSpan.FromSeconds(4);
+
     private bool _suppressPositionSync;
     private bool _suppressVolumeSync;
     private bool _initialized;
+    private DispatcherTimer? _endOfCastTimer;
 
     /// <summary>Last geometry sent, so a burst of layout passes costs one message.</summary>
     private VideoTarget? _reportedTarget;
@@ -104,11 +111,16 @@ public sealed partial class MainPage : Page
         }
 
         App.MainWindow?.SetTransportOverlayVisible(false);
+        _endOfCastTimer?.Stop();
 
-        // The rectangle this page reserved is gone. Sending a host-less target makes the service
-        // detach and fall back to its own window instead of leaving a child window floating over a
-        // page that no longer exists.
-        _ = SendVideoTargetAsync(new VideoTarget { Mode = App.Settings.DisplayMode });
+        // The rectangle this page reserved is gone. Suspending rather than removing the target keeps
+        // the cast where it is: without a host the renderer would fall back to its fullscreen
+        // overlay, and clicking the settings icon would throw the film onto the whole screen.
+        _ = SendVideoTargetAsync(new VideoTarget
+        {
+            Mode = App.Settings.DisplayMode,
+            Enabled = false,
+        });
 
         ViewModel.Dispose();
     }
@@ -118,12 +130,56 @@ public sealed partial class MainPage : Page
     private void OnXamlRootChanged(XamlRoot sender, XamlRootChangedEventArgs args) => ReportVideoTarget(force: true);
 
     /// <summary>
-    /// Shows the floating transport bar while an embedded cast has a picture on screen.
+    /// Shows the floating transport bar while an embedded cast has a picture on screen, and gives up
+    /// both the bar and fullscreen once the cast is really over.
     /// </summary>
+    /// <remarks>
+    /// Both are debounced by the same grace period: switching items in a cast goes
+    /// Stopped -> Transitioning -> Playing within a second, and reacting to the first Stopped would
+    /// flash the controls away and drop the user out of fullscreen every time the next item started.
+    /// </remarks>
     private void UpdateTransportOverlay()
     {
         var embedded = App.Settings.DisplayMode == DisplayMode.Embedded;
-        App.MainWindow?.SetTransportOverlayVisible(embedded && ViewModel.ShowsVideo);
+        var showsVideo = embedded && ViewModel.ShowsVideo;
+
+        if (showsVideo)
+        {
+            _endOfCastTimer?.Stop();
+            App.MainWindow?.SetTransportOverlayVisible(true);
+            return;
+        }
+
+        if (App.MainWindow?.IsFullScreen != true)
+        {
+            // Nothing to wait for: without fullscreen the bar can go at once.
+            App.MainWindow?.SetTransportOverlayVisible(false);
+            return;
+        }
+
+        _endOfCastTimer ??= CreateEndOfCastTimer();
+        _endOfCastTimer.Stop();
+        _endOfCastTimer.Start();
+    }
+
+    private DispatcherTimer CreateEndOfCastTimer()
+    {
+        var timer = new DispatcherTimer { Interval = EndOfCastGrace };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+
+            // Re-check: the picture may have come back while the grace period ran.
+            if (ViewModel.ShowsVideo)
+            {
+                return;
+            }
+
+            App.MainWindow?.SetTransportOverlayVisible(false);
+            App.MainWindow?.SetFullScreen(false);
+        };
+
+        return timer;
     }
 
     /// <summary>Reports the current reserved rectangle to the service, if it changed.</summary>

@@ -90,6 +90,17 @@ public sealed record VideoTarget
 
     public int Height { get; init; }
 
+    /// <summary>
+    /// False while the UI has nowhere to show the picture - the player page is not on screen.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from "no host": a host-less embedded target falls back to fullscreen, which is right
+    /// when the UI is missing but wrong when the user simply opened the settings page. Suspending
+    /// hides the picture and leaves the cast running, so navigating away does not throw a film onto
+    /// the whole screen.
+    /// </remarks>
+    public bool Enabled { get; init; } = true;
+
     /// <summary>True when there is a window to embed into.</summary>
     public bool HasHost => HostWindow != 0;
 
@@ -97,7 +108,7 @@ public sealed record VideoTarget
     public bool HasArea => Width > 1 && Height > 1;
 
     /// <summary>True when this target can actually be honoured in embedded mode.</summary>
-    public bool CanEmbed => Mode == DisplayMode.Embedded && HasHost && HasArea;
+    public bool CanEmbed => Enabled && Mode == DisplayMode.Embedded && HasHost && HasArea;
 }
 
 /// <summary>State reported by the service; UI and protocol layers both project from this.</summary>

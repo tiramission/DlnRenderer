@@ -45,6 +45,11 @@ public sealed partial class TransportOverlayWindow : Window
     private const int GwlHwndParent = -8;
     private const long WsExToolWindow = 0x00000080;
 
+    /// <summary>DWMWA_BORDER_COLOR, and the value that turns the frame off entirely.</summary>
+    private const int DwmwaBorderColor = 34;
+
+    private const uint DwmColorNone = 0xFFFFFFFE;
+
     private readonly nint _handle;
     private readonly DispatcherTimer _idleTimer = new() { Interval = TimeSpan.FromMilliseconds(150) };
     private bool _suppressSlider;
@@ -71,6 +76,11 @@ public sealed partial class TransportOverlayWindow : Window
         // No taskbar entry and no Alt+Tab slot: it is part of the main window, not an application.
         var style = GetWindowLongPtr(_handle, GwlExStyle).ToInt64();
         _ = SetWindowLongPtr(_handle, GwlExStyle, (nint)(style | WsExToolWindow));
+
+        // Windows 11 draws a thin frame around every window, including borderless ones. Around a
+        // rounded bar it reads as a stray ring, so it is removed explicitly.
+        var noBorder = DwmColorNone;
+        _ = DwmSetWindowAttribute(_handle, DwmwaBorderColor, ref noBorder, sizeof(int));
 
         AppWindow.Title = "DlnRenderer 播放控制";
 
@@ -147,8 +157,10 @@ public sealed partial class TransportOverlayWindow : Window
         // Clip the window itself to the card's rounded shape. Without this the rounded border would
         // sit on a rectangular slab of window background, which is what made the bar look broken
         // over video. A window region cuts the corners for real: nothing is painted there at all.
+        // The region covers the client area exactly - a region even one pixel larger leaves a sliver
+        // of window background visible around the edge.
         var radius = (int)Math.Round(CornerRadiusDip * scale);
-        var region = CreateRoundRectRgn(0, 0, width + 1, height + 1, radius * 2, radius * 2);
+        var region = CreateRoundRectRgn(0, 0, width, height, radius * 2, radius * 2);
         if (region != 0)
         {
             // The system owns the region once it is set, so it must not be deleted here.
@@ -375,6 +387,9 @@ public sealed partial class TransportOverlayWindow : Window
 
     [DllImport("user32.dll")]
     private static extern int SetWindowRgn(nint hwnd, nint region, [MarshalAs(UnmanagedType.Bool)] bool redraw);
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(nint hwnd, int attribute, ref uint value, int size);
 
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
     private static extern nint GetWindowLongPtr(nint hwnd, int index);

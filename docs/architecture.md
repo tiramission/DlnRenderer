@@ -665,21 +665,37 @@ Win32 的绘制顺序是确定的：**子窗口永远画在父窗口的 XAML 内
   窗口的绝大部分是服务进程的视频窗口，它不会向 UI 报告任何输入。
 - 鼠标停在悬浮条上不算空闲，拖动进度条时不会被收起。
 - 服务端状态变化时也会重新出现——用户刚在手机或页面上操作过，不该找不到控件。
-- 窗口本身用 `SetWindowRgn` 裁成圆角：否则圆角卡片会坐在一块矩形窗口背景上，看起来像坏掉的控件。
+- 悬浮条是**深色 HUD**，整块铺满窗口。窗口本身用 `SetWindowRgn` 裁成圆角，并用
+  `DWMWA_BORDER_COLOR = NONE` 关掉 Windows 11 给每个窗口画的细边框——这两样都会在圆角外
+  留下可见的环，看起来像控件坏掉。任何内缩（margin/边框）都会露出窗口底色，所以内容必须贴边。
 - 主窗口隐藏到托盘时一并隐藏：`ShowWindow(SW_HIDE)` 不会连带隐藏被拥有窗口，必须显式处理。
 - 主窗口移动/缩放/切换全屏（`AppWindow.Changed`）时重新定位。
+
+#### 离开播放页 = 暂停呈现，不是换地方播
+
+`VideoTarget.Enabled=false` 表示「UI 现在没有地方画」，与「没有 host」是两回事：
+
+| 情况 | 结果 |
+| --- | --- |
+| `Enabled=false`（用户在设置页） | 隐藏画面，投屏继续，音频不断 |
+| 没有 host（UI 没运行/未布局） | 退回全屏 |
+
+早期版本把两者混为一谈：点设置图标 → 页面卸载 → 上报无 host 的目标 → 服务端当成「没有 UI」，
+画面直接跳到全屏。这是真实缺陷，`VideoPresenterTests` 有回归用例。
 
 #### 全屏与退出
 
 `MainWindow.SetFullScreen` 切换 `AppWindowPresenterKind.FullScreen` 并折叠自定义标题栏，
 页面重新上报矩形（全屏态用整个 XamlRoot）——画面真正铺满屏幕。
 
-三条退出路径，缺一不可：
+三条退出路径：
 
 1. 悬浮条上的 ⛶ 按钮（鼠标一动条就回来）。
 2. `Esc`：主窗口持有键盘时的 `KeyboardAccelerator`。
-3. **投屏结束时自动退出全屏**：`SetTransportOverlayVisible(false)` 同时 `SetFullScreen(false)`。
-   没有画面也没有控件却留在全屏，用户会被困在一个空窗口里。
+3. **投屏真的结束 4 秒后自动退出**（悬浮条与全屏一起收起）。
+
+第 3 条带 4 秒宽限：切换下一集时状态会走 `Stopped → Transitioning → Playing`，立刻反应会让
+每次换集都闪掉控件并退出全屏。宽限期内的 `ShowsVideo` 恢复即取消。
 
 用户也可能不经过这些按钮离开全屏（Win+↓），所以 `AppWindow.Changed(DidPresenterChange)`
 会把状态与标题栏同步回真实 presenter。

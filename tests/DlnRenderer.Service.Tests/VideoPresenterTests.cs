@@ -486,6 +486,40 @@ public class VideoPresenterTests
         Assert.True(presenter.IsVisible);
     }
 
+    [Fact]
+    public async Task A_suspended_target_hides_the_picture_instead_of_going_fullscreen()
+    {
+        await using var host = await VideoPresenter.StartAsync();
+        await using var child = await VideoPresenter.StartAsync();
+
+        host.ShowFullscreen();
+        Assert.True(host.WaitForIdle(IdleTimeout));
+
+        var embedded = new VideoTarget
+        {
+            Mode = DisplayMode.Embedded,
+            HostWindow = host.WindowHandle,
+            X = 0,
+            Y = 0,
+            Width = 220,
+            Height = 140,
+        };
+
+        child.SetTarget(embedded);
+        child.Show();
+        Assert.True(child.WaitForIdle(IdleTimeout));
+        Assert.True(child.IsVisible);
+
+        // The player page went away (settings, or any other page). The cast keeps running, but there
+        // is nowhere to draw it — and falling back to fullscreen here is exactly the bug where
+        // clicking the settings icon threw the film onto the whole screen.
+        child.SetTarget(embedded with { Enabled = false });
+        Assert.True(child.WaitForIdle(IdleTimeout));
+
+        Assert.False(child.IsVisible);
+        Assert.Equal("hidden", child.PresentationState);
+    }
+
     private static async Task<bool> WaitForClientSizeAsync(VideoPresenter presenter, int width, int height)
     {
         var deadline = DateTime.UtcNow + IdleTimeout;

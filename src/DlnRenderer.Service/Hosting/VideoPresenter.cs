@@ -466,6 +466,15 @@ public sealed class VideoPresenter : IAsyncDisposable, IMonitorEventsSink
     /// </remarks>
     private void ShowInMode()
     {
+        // The UI said it has nowhere to show the picture (its player page is not on screen).
+        // Hiding is the whole point: falling back to fullscreen here is what threw a cast onto the
+        // whole screen when the user clicked the settings icon.
+        if (!_target.Enabled)
+        {
+            ApplyHidden();
+            return;
+        }
+
         if (_target.CanEmbed)
         {
             ApplyEmbedded(_target);

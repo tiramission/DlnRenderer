@@ -12,82 +12,94 @@
         the video is a native child window of the main window, and Windows always paints child
         windows above the XAML content of their parent - so XAML controls can never be drawn on top
         of the picture. An owned window is the only way to put our own controls there.
+
+        The background fills the window edge to edge: the window itself is cut to a rounded shape
+        with SetWindowRgn, so any inset here would show as a rectangle of window background.
+        A dark HUD reads as "player controls" over any picture, in either theme.
     -->
-    <Grid>
-        <Border
-            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-            BorderThickness="1"
-            CornerRadius="16"
-            Padding="14,8">
-            <StackPanel
+    <Grid Padding="16,0" Background="#E61A1A1A">
+        <StackPanel
+            VerticalAlignment="Center"
+            Orientation="Horizontal"
+            Spacing="8">
+            <Button
+                x:Name="PlayPauseButton"
+                Width="40"
+                Height="40"
+                AutomationProperties.Name="播放 / 暂停"
+                Background="Transparent"
+                BorderThickness="0"
+                Click="OnPlayPauseClick"
+                CornerRadius="20"
+                Foreground="White">
+                <FontIcon FontSize="15" Glyph="&#xE768;" />
+            </Button>
+
+            <Button
+                x:Name="StopButton"
+                Width="40"
+                Height="40"
+                AutomationProperties.Name="停止"
+                Background="Transparent"
+                BorderThickness="0"
+                Click="OnStopClick"
+                CornerRadius="20"
+                Foreground="White">
+                <FontIcon FontSize="15" Glyph="&#xE71A;" />
+            </Button>
+
+            <TextBlock
+                x:Name="ElapsedText"
+                Width="54"
+                Margin="8,0,0,0"
                 VerticalAlignment="Center"
-                Orientation="Horizontal"
-                Spacing="10">
-                <Button
-                    x:Name="PlayPauseButton"
-                    Width="36"
-                    Height="36"
-                    AutomationProperties.Name="播放 / 暂停"
-                    Click="OnPlayPauseClick"
-                    CornerRadius="18">
-                    <FontIcon FontSize="14" Glyph="&#xE768;" />
-                </Button>
+                Foreground="White"
+                Text="00:00"
+                TextAlignment="Right" />
 
-                <Button
-                    x:Name="StopButton"
-                    Width="36"
-                    Height="36"
-                    AutomationProperties.Name="停止"
-                    Click="OnStopClick"
-                    CornerRadius="18">
-                    <FontIcon FontSize="14" Glyph="&#xE71A;" />
-                </Button>
+            <Slider
+                x:Name="PositionSlider"
+                Width="232"
+                VerticalAlignment="Center"
+                AutomationProperties.Name="播放进度"
+                Maximum="1"
+                Minimum="0"
+                StepFrequency="0.1"
+                ValueChanged="OnPositionChanged" />
 
-                <TextBlock
-                    x:Name="ElapsedText"
-                    Width="52"
-                    VerticalAlignment="Center"
-                    Text="00:00"
-                    TextAlignment="Right" />
+            <TextBlock
+                x:Name="TotalText"
+                Width="54"
+                VerticalAlignment="Center"
+                Foreground="White"
+                Text="00:00" />
 
-                <Slider
-                    x:Name="PositionSlider"
-                    Width="240"
-                    VerticalAlignment="Center"
-                    AutomationProperties.Name="播放进度"
-                    Maximum="1"
-                    Minimum="0"
-                    StepFrequency="0.1"
-                    ValueChanged="OnPositionChanged" />
+            <Button
+                x:Name="MuteButton"
+                Width="40"
+                Height="40"
+                AutomationProperties.Name="静音"
+                Background="Transparent"
+                BorderThickness="0"
+                Click="OnMuteClick"
+                CornerRadius="20"
+                Foreground="White">
+                <FontIcon FontSize="15" Glyph="&#xE767;" />
+            </Button>
 
-                <TextBlock
-                    x:Name="TotalText"
-                    Width="52"
-                    VerticalAlignment="Center"
-                    Text="00:00" />
-
-                <Button
-                    x:Name="MuteButton"
-                    Width="36"
-                    Height="36"
-                    AutomationProperties.Name="静音"
-                    Click="OnMuteClick"
-                    CornerRadius="18">
-                    <FontIcon FontSize="14" Glyph="&#xE767;" />
-                </Button>
-
-                <Button
-                    x:Name="FullScreenButton"
-                    Width="36"
-                    Height="36"
-                    AutomationProperties.Name="全屏"
-                    Click="OnFullScreenClick"
-                    CornerRadius="18"
-                    ToolTipService.ToolTip="全屏 / 退出全屏">
-                    <FontIcon FontSize="14" Glyph="&#xE740;" />
-                </Button>
-            </StackPanel>
-        </Border>
+            <Button
+                x:Name="FullScreenButton"
+                Width="40"
+                Height="40"
+                AutomationProperties.Name="全屏"
+                Background="Transparent"
+                BorderThickness="0"
+                Click="OnFullScreenClick"
+                CornerRadius="20"
+                Foreground="White"
+                ToolTipService.ToolTip="全屏 / 退出全屏">
+                <FontIcon FontSize="15" Glyph="&#xE740;" />
+            </Button>
+        </StackPanel>
     </Grid>
 </Window>

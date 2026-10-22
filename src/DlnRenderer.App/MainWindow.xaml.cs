@@ -82,19 +82,13 @@ public sealed partial class MainWindow : Window
     /// visible, because hiding the window does not hide an owned window on its own.
     /// </summary>
     /// <remarks>
-    /// Losing the bar means the cast is over - stopped, or the page went away - so fullscreen is
-    /// given up at the same time. Staying fullscreen with no controls and no picture leaves the user
-    /// with an empty window and no obvious way back.
+    /// Fullscreen is deliberately <em>not</em> tied to this: stopping between two items of a cast
+    /// hides the picture for a moment, and dropping out of fullscreen every time a new item starts
+    /// would be worse than staying put. The page decides when the cast is really over.
     /// </remarks>
     public void SetTransportOverlayVisible(bool visible)
     {
         _overlayWanted = visible;
-
-        if (!visible)
-        {
-            SetFullScreen(false);
-        }
-
         ApplyOverlay();
     }
 
