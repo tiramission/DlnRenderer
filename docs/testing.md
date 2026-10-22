@@ -687,7 +687,7 @@ WinUI/AppSDK 的构建目标会把 R2R 优化带进 `dotnet build`，runner 上�
 `a valid runtime package was not found`。Release 发布路径由 `tools/package/build-dist.ps1`
 （显式 `-r win-x64`）覆盖，不进 CI。
 
-### 12.2 绿色结果（run 39668804204，2026-10-22）
+### 12.2 绿色结果（run 39708351714，2026-10-22）
 
 | 项目 | 结果 |
 | --- | --- |
@@ -697,6 +697,15 @@ WinUI/AppSDK 的构建目标会把 R2R 优化带进 `dotnet build`，runner 上�
 | Service | 115 / 115（含 8 个用 ffmpeg 现生成素材的窗口生命周期测试，真实运行） |
 | 合计 | **402 通过 / 0 失败 / 0 跳过**，日志含 libmpv 归档哈希、ffmpeg 9.0.2 版本行 |
 
+本次运行的三个"看不见的"断言（均实际核对过日志）：
+
+- **构建日志里没有 `libmpv-2.dll is missing` 警告**——这本身就是 fetch 步骤生效的证据。
+  该警告只在"本地没有 DLL"时出现，所以它一旦在 CI 日志里出现，说明 fetch 步骤坏了，
+  而不是应该去屏蔽它。
+- **没有 `Skipped` 行**——与本地"无 DLL 时 23 跳过"的对照组（§12.5）相区分。
+- **没有任何 annotation**：`actions/checkout` 与 `actions/setup-dotnet` 已从 v4（node20）升到
+  v5（node24），否则每个 job 都会带一条 Node.js 20 弃用警告。
+
 ### 12.3 迭代过程中暴露的三个真实问题（均已修复）
 
 | 轮次 | 现象 | 根因与处理 |
@@ -705,6 +714,7 @@ WinUI/AppSDK 的构建目标会把 R2R 优化带进 `dotnet build`，runner 上�
 | 2 | Service 15 个失败（`libmpv is not available`） | CI 拉取 libmpv；`RequireMpv()` 抛异常改为共享 `MpvFact` 跳过兜底 |
 | 3 | Service 7 个失败（`cannot find ffmpeg`）、Player 1 个硬解失败 | 装 ffmpeg + 新增 `MpvFFmpegFact`；GPU 相关测试显式排除 |
 | 4 | Player 1 个失败（`Nullable object must have a value`） | **真实竞态**：`Paused` 快照里 `Duration` 还是 null；改为等两者同时满足 |
+| 5 | 全绿但每个 job 带 `Node.js 20 is deprecated` annotation | action 版本落后：`checkout@v4`/`setup-dotnet@v4` 声明 node20，被强制跑在 node24；升到 v5 |
 
 ### 12.4 CI 环境事实（不是产品缺陷）
 
