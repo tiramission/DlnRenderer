@@ -110,7 +110,10 @@ jobs:
         shell: pwsh
         timeout-minutes: 15
         run: |
-          function Assert-Tool(string $Name, string $Marker) {
+          # PowerShell has no C-style parameter list on function definitions; this is the
+          # param() form, and $Name/$Marker are positional.
+          function Assert-Tool {
+              param([string]$Name, [string]$Marker)
               $output = & winapp tool -- $Name /? 2>&1 | Out-String
               if ($output -notmatch $Marker) {
                   throw "$Name is not available through winapp. Output: $output"
@@ -118,8 +121,8 @@ jobs:
               Write-Host ($output -split "`n" | Where-Object { $_.Trim() } | Select-Object -First 2)
           }
 
-          Assert-Tool 'makeappx' 'MakeAppx'
-          Assert-Tool 'signtool' 'signtool'
+          Assert-Tool -Name 'makeappx' -Marker 'MakeAppx'
+          Assert-Tool -Name 'signtool' -Marker 'signtool'
 
       # The MSIX must be signed by a certificate the user trusts, and this build has no CA
       # certificate. A dev certificate is generated per run with the Publisher taken from the
