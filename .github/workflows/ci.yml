@@ -1,8 +1,9 @@
 name: CI
 
-# Build and test only. Nothing here needs a real libmpv, a real control point or a network peer:
-# the player integration tests skip themselves when libmpv-2.dll is absent (TestSupport), which is
-# why this can run on a clean Windows runner. Real-device verification stays manual (docs/testing.md).
+# Build and test only. Nothing here needs a real control point or a network peer; the native
+# dependencies it does need are provisioned below (libmpv fetched, ffmpeg installed), so the
+# player-backed tests run for real rather than skipping. Real-device verification stays manual
+# (docs/testing.md).
 on:
   push:
     branches: [main]
@@ -37,6 +38,10 @@ jobs:
       # RenderingControl and VolumeStateConsistency coverage lives. Downloading a GPL binary for
       # CI use is not redistribution; nothing from it is committed. Needs 7z, which the windows
       # runner image ships.
+      #
+      # The skip attributes in the test projects stay: they are the fallback for a developer machine
+      # or a run without this step, and they report a missing DLL as skipped with the script name,
+      # never as a pass. What they are not is the CI story - a green run here executes these tests.
       - name: Fetch libmpv (pinned, hash-verified)
         shell: pwsh
         run: ./scripts/fetch-libmpv.ps1 -Download

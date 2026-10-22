@@ -1,7 +1,8 @@
 # DlnRenderer 开发路线图
 
 > 本文件最初基于 **2026-10-21** 仓库真实状态审查（`main` @ `12be11d`）编写，之后随阶段 A–E 逐段修订；
-> 阶段 E2（用户级 MSIX）修订于 **2026-10-22**。§1–§2 的现状描述是阶段 A 之前的基线，以各阶段小节为准。
+> 阶段 E2（用户级 MSIX）与阶段 F（许可证、可复现发布、CI）修订于 **2026-10-22**。
+> §1.2–§1.3 与 §2 的现状表是阶段 A 之前的基线，以各阶段小节为准；§1.4 已按阶段 F 之后的状态重写。
 > 所有结论尽量指向实际文件、测试或提交；无法从仓库证明的内容标记为 **待验证**。
 > 状态用词严格区分「代码存在」「自动化测试通过」「真实设备验收通过」——三者不等价。
 
@@ -58,41 +59,41 @@ DlnRenderer 是一个 **DLNA Media Renderer（DMR）**：它让手机、平板�
 
 ### 1.4 最重要的技术债务、风险与产品缺口
 
-按严重程度排序，均有仓库证据：
+按严重程度排序，均有仓库证据。**本节修订于 2026-10-22（阶段 F/G 之后）**，此前列在这里的
+许可证、托盘、设置页、安装包、日志轮换均已关闭，关闭项集中列在 §1.4.3。
 
-1. **libmpv 许可证未定案（最高风险，阻塞分发）**
-   `docs/licenses.md` 明确记录当前二进制是 GPL-2.0-or-later 构建，且仓库**不含** `THIRD-PARTY-NOTICES`。
-   这不是代码问题，但决定产品能否发布。
+#### 1.4.1 仍然开放的风险
 
-2. **没有安装包、没有托盘、没有设置页（产品形态缺口）**
-   - `packaging/` 目录**不存在**。
-   - 全仓库搜索 `NotifyIcon` / `TrayIcon` / `Shell_NotifyIcon`：**零命中**。
-   - 搜索设置持久化（`ApplicationData` / 设置文件）：**零命中**。
-   - `Package.appxmanifest` 的 `Publisher` 仍是模板占位值 `CN=AppPublisher`。
+1. **真实控制端互操作性未被证明（最高风险）**
+   `docs/testing.md` §5.3 记录：最近一轮交付时服务日志中**没有任何手机投屏记录**
+   （`SetAVTransportURI` 计数为 0）。GENA 与 RenderingControl 已有 22 个端到端测试（本机回调），
+   但**从未被真实客户端订阅或调用过**。协议实现完备 ≠ 互操作已验证。
 
-3. **GENA 与 RenderingControl 缺少真实设备验收**
-   `docs/testing.md` §5.3 明确记录：本轮交付时服务日志中**没有任何手机投屏记录**
-   （`SetAVTransportURI` 计数为 0）。协议实现完备，但互操作性未被真实客户端证明。
+2. **未代码签名、干净机器未验证（阻塞"对外分发"）**
+   MSIX 用 dev 证书（`CN=AppPublisher`，`Package.appxmanifest`），无 CA 证书；缺 Windows App
+   Runtime 时的安装体验未实测（`docs/testing.md` §11.5）。
 
-4. **网络变化恢复未在真实拔插下验证**
+3. **网络变化恢复未在真实拔插下验证**
    `NetworkChange.NetworkAddressChanged` 已接入（阶段 A4），接口差异由纯函数计算，9 个单元测试覆盖；
    但真实断开/恢复 Wi-Fi 需要管理员会话，尚未验证（`docs/testing.md` §6.1）。
 
-5. ~~日志无轮换~~ **已解决（阶段 A5）**
-   按天保留 7 天，7 个单元测试 + 实测清理。
-
-6. **文档与代码脱节**
-   `README.md` 仍写"GENA `SUBSCRIBE` 返回 501""RenderingControl 未实现""163 个测试"；
-   `docs/architecture.md` 的已知限制列表仍列着已完成的 GENA/RenderingControl。
-   这会误导后续贡献者与 Agent。
-
-7. **UI 功能单薄**
-   `MainPage.xaml` 只有状态卡、进度条、播放/暂停/停止、音量滑块。ViewModel 已有
-   `IsMuted`/`SetMuteAsync`，但**界面上没有静音按钮**；没有封面、没有设置页、没有托盘菜单。
-
-8. **未验证的目标环境**
+4. **未验证的目标环境**
    `TargetPlatformMinVersion` 为 17763（Windows 10 1809），但**只在 Windows 11 26300 实测**；
    ARM64 未实测（`docs/licenses.md` 也说明 libmpv 只有 x64）。
+
+5. **文档与代码脱节（残留）**
+   本文件 §1.2–§1.3 与 §2 的现状表仍是**阶段 A 之前的基线**，以各阶段小节为准；
+   `docs/architecture.md` §8/§9 的过期条目已同步（许可证、GENA、RenderingControl）。
+
+#### 1.4.2 已关闭（仅留痕，不再重复讨论）
+
+| 曾列的风险 | 关闭依据 |
+| --- | --- |
+| libmpv 许可证未定案 | **阶段 F**：GPL-2.0-or-later，`LICENSE` + `THIRD-PARTY-NOTICES.md` + `LICENSES/`，`docs/architecture.md` §17 |
+| 无托盘 / 无设置页 / 无设置持久化 | **阶段 C**：`TrayIcon`、`SettingsStore`（18 个测试）、设置页 |
+| 无安装包 | **阶段 E**：绿色包 + 用户级 MSIX，`tools/package/` |
+| 日志无轮换 | **阶段 A5**：按天保留 7 天 |
+| 无 CI | **阶段 F6**：`.github/workflows/ci.yml`，2026-10-22 绿色（402 通过 / 0 跳过，`docs/testing.md` §12） |
 
 ### 1.5 到第一个可靠、可安装正式版还差什么
 

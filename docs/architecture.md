@@ -124,8 +124,8 @@ Windows 10 1809 为声明的最低版本，但**本机无法实测**，属于未
 - 同一上游提供 `aarch64` 变体，因此 ARM64 路线可行，但**未在本机验证**。
 
 对项目的影响（关键）：当前可用的 libmpv 是 GPLv2+。若项目以非 GPL 许可证发布，
-直接链接该 DLL 会让整个应用受 GPL 约束。阶段 1.5 已用该构建完成真实播放验证，
-但**仅限本地开发、不分发**；许可证选择与义务见 §10.1。
+直接链接该 DLL 会让整个应用受 GPL 约束。阶段 1.5 时因此只把该构建用于本地开发验证；
+阶段 F 已决定**项目整体采用 GPL-2.0-or-later、libmpv 随包分发**，义务见 §10.1 与 §17。
 
 候选绑定库：`HanumanInstitute.LibMpv` 0.10.1，MIT，只是 P/Invoke 封装，原生 DLL 仍需自行提供。
 **未采用**：本项目只用约 10 个 C 函数，自写互操作面更小且无需额外依赖（已实际播放验证）。
@@ -222,7 +222,7 @@ Core 当前内容：
 | xunit.runner.visualstudio | 3.1.4 | Apache-2.0 | 测试项目 |
 | Microsoft.NET.Test.Sdk | 17.14.1 | MIT | 测试项目 |
 | coverlet.collector | 6.0.4 | MIT | 测试项目 |
-| libmpv（zhongfly 构建） | 20261019-git-6a262d11f6（mpv 0.41.0-1224） | **GPL-2.0-or-later（实测确认）** | 本地开发依赖，**不入库、不随包分发**；见 §10.1 |
+| libmpv（zhongfly 构建） | 20261019-git-6a262d11f6（mpv 0.41.0-1224） | **GPL-2.0-or-later（实测确认）** | **随包分发**；二进制不入库，由 `scripts/fetch-libmpv.ps1` 获取；见 §10.1、§17 |
 | mpv 客户端头文件 `client.h` | 随上面的构建提供 | ISC | 仅头文件 API 声明；P/Invoke 按此手写 |
 | HanumanInstitute.LibMpv | 0.10.1（候选） | MIT | P/Invoke 封装；未采用（自写更小的接口面） |
 
@@ -256,8 +256,9 @@ winapp run src/DlnRenderer.App -c Debug --detach
 
 ## 8. 已知问题与风险
 
-1. **libmpv 许可证未定案（阻断分发，不阻断开发）**：现有可用二进制均为 GPL。项目尚未声明整体许可证；
-   在做出决定前，播放器只作本地开发验证，不随包分发。详见 §10.1。
+1. ~~libmpv 许可证未定案~~ **已解决（阶段 F）**：项目整体采用 GPL-2.0-or-later，`libmpv-2.dll`
+   随包分发，`LICENSE` + `THIRD-PARTY-NOTICES.md` + `LICENSES/` 由 `stage-legal-files.ps1` 打入产物。
+   决策、义务与重开 LGPL 的条件见 §17。
 2. **ARM64 未验证**：有 `aarch64` 产物，但本机为 x64，未实测。
 3. **Windows 10 兼容性未验证**：`TargetPlatformMinVersion` 为 17763，但本机只有 Windows 11 26300。
 4. **仓库已纳入 Git**：基线提交为 `1ecb98f`；`packages.lock.json` 已入库。
@@ -266,14 +267,16 @@ winapp run src/DlnRenderer.App -c Debug --detach
 7. **视频不再与 XAML 重叠**：阶段 3 起视频由**服务进程**的原生窗口呈现，UI 进程不再承载视频表面，
    §10.3 中“子窗口遮挡 XAML”的约束只适用于 UI 内嵌场景（当前未使用）。
 8. **构建工具再分发**：`Microsoft.Windows.SDK.BuildTools` 受 Windows SDK 许可约束，发布前需确认打包内容。
-9. **GENA 事件未实现**：`SUBSCRIBE` 返回 501，控制端需轮询 `GetTransportInfo`（详见 §11.3）。
-10. **RenderingControl 未实现**：音量的 DLNA 侧控制缺失，目前只能经 IPC 调整。
+9. ~~GENA 事件未实现~~ **已实现（阶段 B）**：`SUBSCRIBE`/续订/`UNSUBSCRIBE` 与 `LastChange`
+   事件通知均已实现并有测试覆盖，见 `Gena/` 与 §11.3。**真实控制端验收仍未完成**。
+10. ~~RenderingControl 未实现~~ **已实现（阶段 B）**：音量/静音经 DLNA 侧可用，与 IPC 共用
+   同一播放器状态。**真实控制端验收仍未完成**。
 
 ---
 
 ## 9. 下一阶段建议
 
-1. 决定 libmpv 许可证路线（LGPL 构建 vs 接受 GPL）；在原生产物能合规分发之前，不进入对外发布流程。
+1. ~~决定 libmpv 许可证路线~~ **已完成（阶段 F）**：走 GPL-2.0-or-later，原生产物可合规分发，见 §17。
 2. 把仓库纳入 Git 管理并提交 `packages.lock.json`。
 3. 阶段 3：定义 IPC 协议（版本字段、请求 ID、错误结构、大小上限），创建 `DlnRenderer.Service` 与
    `DlnRenderer.Dlna` 项目，实现 `GetStatus` 与 `RendererStateChanged`，在 UI 上显示服务连接状态。
@@ -416,8 +419,8 @@ sha256 `38acd030...`）的 `mpv-configuration` **同样不含** `-Dgpl=false`，
 | 设备描述、AVTransport 与 ConnectionManager 的 SCPD | 已实现 |
 | AVTransport：`SetAVTransportURI`、`Play`、`Pause`、`Stop`、`Seek`、`GetTransportInfo`、`GetPositionInfo`、`GetMediaInfo`、`GetDeviceCapabilities`、`GetTransportSettings`、`GetCurrentTransportActions` | 已实现 |
 | ConnectionManager：`GetProtocolInfo`、`GetCurrentConnectionIDs`、`GetCurrentConnectionInfo` | 已实现，sink 仅声明 `http-get:*:*:*` |
-| GENA（`SUBSCRIBE`/`NOTIFY`） | **未实现**，返回 501 |
-| RenderingControl（音量/静音） | **未实现** |
+| GENA（`SUBSCRIBE`/续订/`UNSUBSCRIBE`、`NOTIFY`） | 已实现（阶段 B）；**未做真实控制端验收** |
+| RenderingControl（`GetVolume`/`SetVolume`/`GetMute`/`SetMute`） | 已实现（阶段 B）；`GetVolumeDB` 系列未实现且未声明；**未做真实控制端验收** |
 
 设备描述中**没有**写入 `X_DLNADOC` 等 DLNA 认证标记：本项目未做 DLNA 认证，不应宣称符合某版本规范。
 
@@ -851,8 +854,11 @@ LGPL 预编译产物。代价：自行交叉编译、保留构建脚本与源码
 ### 17.5 CI（F6）
 
 `.github/workflows/ci.yml` 在 windows-latest 上 restore → build → test，并把
-`stage-legal-files.ps1` 跑一遍以守住"分发包必带法律文件"的契约。不涉及真实设备项，
-那些仍留在 `docs/testing.md` 的手工验收清单。
+`stage-legal-files.ps1` 跑一遍以守住"分发包必带法律文件"的契约。CI **自己供应原生依赖**：
+`scripts/fetch-libmpv.ps1 -Download` 拉取本节锁定的那个构建（先校验 7z 归档哈希、再校验解出的
+DLL 哈希），`choco install ffmpeg` 供应窗口测试生成素材所需的重编码器——这样播放器相关集成测试
+在 CI 上是真实执行而非跳过。下载 GPL 二进制用于 CI 不属于再分发，也没有任何内容被提交。
+不涉及真实设备项，那些仍留在 `docs/testing.md` 的手工验收清单。
 
 ### 17.6 剩余缺口（不阻塞"可分发"）
 

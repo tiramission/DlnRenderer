@@ -16,16 +16,20 @@
 
 ## 2. 首次准备：获取 libmpv
 
-`libmpv-2.dll` 是原生依赖，**不在仓库中**（GPL 构建，仅限本地开发，见 `docs/architecture.md` §10.1）。
+`libmpv-2.dll` 是原生依赖，**不在仓库中**（GPL-2.0-or-later 二进制，二进制不入库，但**随分发包提供**；
+义务与决策见 `docs/architecture.md` §17）。
 
 ```powershell
-pwsh scripts/fetch-libmpv.ps1
+pwsh scripts/fetch-libmpv.ps1            # 本机已有 Scoop mpv-dev 时：直接复制
+pwsh scripts/fetch-libmpv.ps1 -Download  # 干净机器/CI：拉取锁定的上游归档并解出 DLL
 ```
 
 脚本会：
 
-1. 从本机 Scoop 的 `mpv-dev` 包复制 `libmpv-2.dll` 到 `src/DlnRenderer.Player/native/x64/`。
-2. 校验 SHA-256（默认 `53513b8f...`，可用 `-ExpectedSha256` 指定其他构建）。
+1. 从本机 Scoop 的 `mpv-dev` 包复制 `libmpv-2.dll`（或 `-Download` 时从上游 release 归档解出）
+   到 `src/DlnRenderer.Player/native/x64/`。
+2. 校验 SHA-256（默认 `53513b8f...`，可用 `-ExpectedSha256` 指定其他构建）。`-Download` 还会
+   先校验 7z 归档本身的哈希，两个哈希都对才落盘。
 3. 写出 `libmpv.provenance.json`（来源、哈希、时间）。
 
 其他来源的构建需先用 `-SkipHashCheck` 复制，并**自行确认许可证**：只有 `mpv-configuration`
@@ -48,7 +52,15 @@ dotnet test DlnRenderer.sln -c Debug
 
 - **纯单元测试**：状态机、状态映射、进度节流、SSDP/SOAP/DIDL 解析 —— 不需要 native DLL。
 - **原生/集成测试**：真实启动 libmpv（`ao=null` / `vo=null`）、真实 Named Pipe、回环 HTTP。
-  DLL 缺失时播放器用例会以明确的 `Skip` 信息跳过，而不是静默通过。
+  DLL 缺失时播放器用例会以明确的 `Skip` 信息跳过，而不是静默通过。窗口生命周期测试还会
+  用 `ffmpeg` 现生成素材，缺 ffmpeg 时同样跳过并说明原因。
+
+### 3.1 CI 上的同一套测试
+
+`.github/workflows/ci.yml` 在 `windows-latest` 上跑与上面完全相同的命令，但它**自己供应**两个原生
+依赖，所以播放器相关用例是真实执行而不是跳过：`fetch-libmpv.ps1 -Download`（双哈希校验）、
+`choco install ffmpeg`。2026-10-22 的结果是 **402 通过 / 0 失败 / 0 跳过**（另 1 个 GPU 硬解测试
+因 runner 无显卡按全名排除）。细节与迭代记录见 `docs/testing.md` §12。
 
 ## 4. 运行
 

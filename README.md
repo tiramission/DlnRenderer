@@ -5,8 +5,11 @@
 > 当前状态：**DLNA 投屏链路可用，协议层完整**。设备发现、投屏播放、全屏置顶窗口、
 > GENA 事件订阅与音量/静音控制均已实现，并有自动化测试覆盖。
 > 分发渠道有两条（绿色包 + 用户级 MSIX），安装/升级/卸载与 MSIX 下的投送链路已在本机实测；
-> **但尚未达到可对外分发的状态**：干净机器未验证、libmpv 许可证未定案、
-> 未代码签名（见下文）。
+> **但尚未达到可对外分发的状态**：干净机器未验证、未代码签名（见下文）。
+> 许可证已定案（阶段 F）：**GPL-2.0-or-later**，法律文件随包分发，见 `LICENSE` 与
+> [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)。
+
+[![CI](https://github.com/tiramission/DlnRenderer/actions/workflows/ci.yml/badge.svg)](https://github.com/tiramission/DlnRenderer/actions/workflows/ci.yml)
 
 ## 已实现
 
@@ -46,6 +49,11 @@ dotnet test DlnRenderer.sln -c Debug
 # 403 通过 / 0 失败 / 0 跳过
 # Core 43、Player 23、Dlna 222、Service 115
 ```
+
+CI（GitHub Actions，push/PR 触发，见 [.github/workflows/ci.yml](.github/workflows/ci.yml)）在干净
+runner 上拉取评审过的 libmpv（双哈希校验）、安装 ffmpeg 后跑同一套：402 通过 / 0 失败 /
+0 跳过（另 1 个硬解测试因 runner 无 GPU 按名排除）。环境事实与迭代记录见
+[`docs/testing.md`](docs/testing.md) §12。
 
 协议层另有真实服务端到端脚本，见 `tools/control-point/`；
 媒体兼容性实测见 `tools/media-compat/`；安装/卸载脚本见 `tools/package/`。
@@ -95,10 +103,12 @@ pwsh tools/package/build-msix.ps1   # MSIX → dist/msix/DlnRenderer-x64.msix
 ## 首次准备
 
 ```powershell
-pwsh scripts/fetch-libmpv.ps1
+pwsh scripts/fetch-libmpv.ps1            # 已有 Scoop mpv-dev 时直接复制
+pwsh scripts/fetch-libmpv.ps1 -Download  # 没有本地副本时拉取锁定的上游归档
 ```
 
-`libmpv-2.dll` 不随仓库提供（GPL 构建，仅限本地开发）。脚本会校验哈希并记录来源。
+`libmpv-2.dll` 不入库（GPL-2.0-or-later 二进制），但**随分发包提供**。脚本校验两层 SHA-256
+（归档与 DLL）并写出 `libmpv.provenance.json` 记录来源。
 
 ## 构建与测试
 

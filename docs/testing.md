@@ -667,3 +667,62 @@ pwsh tools/package/verify-service.ps1              # 体检
 - **干净机器**：缺 Windows App Runtime 时的安装体验未验证。
 - **卸载后的数据目录**：保留策略未定，也未验证残留。
 - **正式代码签名**：当前是 dev 证书（阶段 F5）。
+
+## 12. CI 自动化测试（GitHub Actions，2026-10-22）
+
+### 12.1 触发与步骤
+
+`.github/workflows/ci.yml`，push/PR 到 `main`，`windows-latest`：
+
+1. Checkout + .NET 10（`global.json` 钉住 10.0.402，装 feature band）
+2. `scripts/fetch-libmpv.ps1 -Download` —— 拉评审过的那个 libmpv 构建，**双哈希**：先校验 7z
+   归档（`2c71ab5c…`），再校验解出的 DLL（`53513b8f…`，即 `docs/licenses.md` 记录的指纹）
+3. `choco install ffmpeg` + 显式写 `GITHUB_PATH` + `ffmpeg -version` 断言（镜像不带 ffmpeg）
+4. `restore` → `build -c Debug -p:Platform=x64` → `test`（同参数 + `--filter`，`--no-build`）
+5. 跑 `stage-legal-files.ps1` 并断言 `LICENSE` / `THIRD-PARTY-NOTICES.md` / `LICENSES/` 就位
+   （守住“分发包必带法律文件”的契约）
+
+**为什么是 Debug 而不是 Release**：`DlnRenderer.csproj` 对非 Debug 配置设 `PublishReadyToRun=True`，
+WinUI/AppSDK 的构建目标会把 R2R 优化带进 `dotnet build`，runner 上缺 RID 运行时包直接报
+`a valid runtime package was not found`。Release 发布路径由 `tools/package/build-dist.ps1`
+（显式 `-r win-x64`）覆盖，不进 CI。
+
+### 12.2 绿色结果（run 39668804204，2026-10-22）
+
+| 项目 | 结果 |
+| --- | --- |
+| Core | 43 / 43 |
+| Player | 22 / 22（另 1 个 GPU 相关测试被 `--filter` 排除，见 12.4） |
+| Dlna | 222 / 222 |
+| Service | 115 / 115（含 8 个用 ffmpeg 现生成素材的窗口生命周期测试，真实运行） |
+| 合计 | **402 通过 / 0 失败 / 0 跳过**，日志含 libmpv 归档哈希、ffmpeg 9.0.2 版本行 |
+
+### 12.3 迭代过程中暴露的三个真实问题（均已修复）
+
+| 轮次 | 现象 | 根因与处理 |
+| --- | --- | --- |
+| 1 | Build 失败：`a valid runtime package was not found` | Release + R2R；改为与仓库文档一致的 Debug |
+| 2 | Service 15 个失败（`libmpv is not available`） | CI 拉取 libmpv；`RequireMpv()` 抛异常改为共享 `MpvFact` 跳过兜底 |
+| 3 | Service 7 个失败（`cannot find ffmpeg`）、Player 1 个硬解失败 | 装 ffmpeg + 新增 `MpvFFmpegFact`；GPU 相关测试显式排除 |
+| 4 | Player 1 个失败（`Nullable object must have a value`） | **真实竞态**：`Paused` 快照里 `Duration` 还是 null；改为等两者同时满足 |
+
+### 12.4 CI 环境事实（不是产品缺陷）
+
+- **runner 虚拟机没有可用硬解**：`dxva2_vld` 初始化失败，mpv 回退软解。因此
+  `MediaCompatibilityTests.Hardware_decoding_is_used_when_the_machine_supports_it` 被按全名
+  排除——它断言的是“机器有解码器时必须用上”，前提是机器有解码器。同一测试在真实 GPU 机器
+  通过（阶段 D）；覆盖软解回退的兄弟测试在 CI 正常运行。
+- **镜像不带 ffmpeg**：由 choco 安装，`-version` 断言保证路径正确时才继续。
+- **镜像不带 libmpv**（刻意不入库）：由 `-Download` 拉取，校验失败则步骤报错。
+
+### 12.5 三条路径的本地实测（2026-10-22，Windows 11 26300）
+
+| 路径 | 结果 |
+| --- | --- |
+| libmpv + ffmpeg + GPU 齐全 | 403 通过 / 0 失败 / 0 跳过 |
+| 移走 `libmpv-2.dll` | Service 92 通过 / **23 跳过** / 0 失败，跳过消息指向 `scripts/fetch-libmpv.ps1` |
+| 从 PATH 隐藏 ffmpeg | Service 107 通过 / **8 跳过** / 0 失败，消息指向安装 ffmpeg |
+
+### 12.6 CI 不覆盖
+
+真实控制端投屏、网络中断恢复、8 小时长跑、MSIX 安装、开机启动重启——仍在各阶段的手工清单里。
