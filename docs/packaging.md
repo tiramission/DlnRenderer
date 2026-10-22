@@ -106,3 +106,69 @@ SCM 托管的服务运行在 **session 0**，那里没有用户桌面，GPU 交�
 
 > 未覆盖：画面是否真的显示在屏幕上我没有做截图确认，只确认了窗口创建、presenter 切换和播放状态为
 > `Playing`、无 mpv 报错。需要你目视确认一次。
+
+## 7. CI 打包与发布（`release.yml`）
+
+打包曾经只在一台机器上手工跑过，"能发布"于是依赖那台机器。现在整条路径在 CI 上可复现。
+
+### 7.1 触发
+
+手动（`workflow_dispatch`），三个输入：
+
+| 输入 | 作用 |
+| --- | --- |
+| `version` | 必须与 `Directory.Build.props` 的 `<Version>` **和** `Package.appxmanifest` 的 `Identity Version` 一致；不一致直接失败 |
+| `publish` | 关掉只产出 workflow artifact，不开 GitHub Release |
+| `prerelease` | 是否标记为预发布 |
+
+```powershell
+gh workflow run release.yml -f version=0.1.0 -f publish=true -f prerelease=true
+```
+
+### 7.2 步骤
+
+1. `microsoft/setup-WinAppCli@v0.2`（钉 `v0.7.1`）——官方文档指定的 CI 安装方式，优于自己下载。
+2. 预热打包工具链：`winapp tool -- makeappx /?` 与 `signtool /?`，**按输出横幅判断**而不是退出码
+   （`makeappx /?` 即使成功也返回 1）。缺 Build Tools 时 winapp 会自行下载。
+3. `fetch-libmpv.ps1 -Download`（双哈希）与 `choco install 7zip`。
+4. `winapp cert generate`：**每次运行新生成** dev 证书，Publisher 取自清单。
+5. `build-dist.ps1` → `build-msix.ps1 -Cert <本次证书>` → `hash-release.ps1`。
+6. 组装资产 + 导出 `.cer` + 写 `SHA256SUMS-assets.txt` + 生成发布说明。
+7. `gh release create`。
+
+### 7.3 发布资产
+
+| 资产 | 用途 |
+| --- | --- |
+| `DlnRenderer-<ver>-win-x64.zip` | 绿色包（含 `install.ps1`） |
+| `DlnRenderer-<ver>-win-x64.msix` | 用户级 MSIX |
+| `DlnRenderer-dev.cer` | **公钥证书**，用户装包前需一次性信任 |
+| `SHA256SUMS-assets.txt` | 上面每个资产的哈希 |
+| `SHA256SUMS-portable.txt` | 绿色包内 86 个文件的逐文件哈希 |
+| `release-manifest.json` | 版本、commit、libmpv 指纹、文件清单 |
+
+`.pfx`（含私钥）**不发布**，只在 workflow 的临时目录里存在。发布的 `.cer` 只能验证签名，不能签名。
+
+### 7.4 用户如何装（dev 证书）
+
+```powershell
+# 1. 一次性信任（管理员）
+Import-Certificate -FilePath .\DlnRenderer-dev.cer -CertStoreLocation Cert:\LocalMachine\Root
+# 2. 安装（当前用户，无需提权）
+Add-AppxPackage -Path .\DlnRenderer-0.1.0-win-x64.msix
+```
+
+### 7.5 v0.1.0 实测（2026-10-22，CI run `39712214577`）
+
+| 检查 | 结果 |
+| --- | --- |
+| workflow 全部 21 步 | ✅ |
+| GitHub Release `v0.1.0`（prerelease） | ✅ 6 个资产 |
+| 下载后重算 5 个资产的 SHA-256 | ✅ 与 `SHA256SUMS-assets.txt` 逐字节一致 |
+| MSIX 签名者指纹 = 发布 `.cer` 指纹 | ✅ `6ED67D3F…` |
+| 信任 `.cer` 后签名状态 | ✅ `UnknownError` → `Valid` |
+| `Add-AppxPackage` 安装发布包 | ✅ `Status: Ok`，版本 `0.1.0.0` |
+| 绿色包 | ✅ 211.1 MB，86 个文件，含 libmpv 与法律文件 |
+
+**未覆盖**：干净机器（无 .NET 10 桌面运行时、无 Windows App Runtime）的安装体验；
+ARM64；CA 签名。发布说明里已如实声明这些未知项。

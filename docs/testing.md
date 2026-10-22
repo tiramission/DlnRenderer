@@ -733,6 +733,19 @@ WinUI/AppSDK 的构建目标会把 R2R 优化带进 `dotnet build`，runner 上�
 | 移走 `libmpv-2.dll` | Service 92 通过 / **23 跳过** / 0 失败，跳过消息指向 `scripts/fetch-libmpv.ps1` |
 | 从 PATH 隐藏 ffmpeg | Service 107 通过 / **8 跳过** / 0 失败，消息指向安装 ffmpeg |
 
+### 12.5b 发布工作流（`release.yml`）
+
+独立于 `ci.yml`，手动触发，构建绿色包 + MSIX 并开 GitHub Release。实跑 `39712214577`（2026-10-22）
+全部 21 步通过，产出 `v0.1.0`；下载回来的资产哈希逐字节对上，MSIX 在本机装成功
+（`Status: Ok`）。完整记录与证书步骤见 [`docs/packaging.md`](packaging.md) §7。
+
+迭代中暴露的两个真问题（与 CI 主工作流同源：**不要把"看起来成功"当成功**）：
+
+| 现象 | 根因 |
+| --- | --- |
+| `makeappx is not available through winapp (1)` | `makeappx /?` 成功时也返回退出码 1；按退出码判定会误判可用工具链为损坏。改为先看输出再判 |
+| `Get-AuthenticodeSignature` 报 `UnknownError` | dev 证书不在根存储，签名**本身有效**；旧代码把"未信任"当作失败。现在断言签名者指纹等于使用的证书 |
+
 ### 12.6 CI 不覆盖
 
 真实控制端投屏、网络中断恢复、8 小时长跑、MSIX 安装、开机启动重启——仍在各阶段的手工清单里。

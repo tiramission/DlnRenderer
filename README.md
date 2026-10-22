@@ -9,7 +9,7 @@
 > 许可证已定案（阶段 F）：**GPL-2.0-or-later**，法律文件随包分发，见 `LICENSE` 与
 > [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)。
 
-[![CI](https://github.com/tiramission/DlnRenderer/actions/workflows/ci.yml/badge.svg)](https://github.com/tiramission/DlnRenderer/actions/workflows/ci.yml)
+[![CI](https://github.com/tiramission/DlnRenderer/actions/workflows/ci.yml/badge.svg)](https://github.com/tiramission/DlnRenderer/actions/workflows/ci.yml) [![Release](https://github.com/tiramission/DlnRenderer/actions/workflows/release.yml/badge.svg)](https://github.com/tiramission/DlnRenderer/actions/workflows/release.yml)
 
 ## 已实现
 
