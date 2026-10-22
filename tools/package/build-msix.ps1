@@ -250,9 +250,10 @@ function Resolve-MakeAppx {
         Sort-Object FullName -Descending | Select-Object -First 1
     if ($kits) { return @{ Kind = 'exe'; Path = $kits.FullName } }
 
-    # winapp tool can provision and run the SDK tool itself; probe it before giving up.
+    # winapp tool can provision and run the SDK tool itself; probe it before giving up. Judge by
+    # the banner, not the exit code: makeappx /? exits 1 even when it works.
     $probe = & winapp tool -- makeappx /? 2>&1 | Out-String
-    if ($LASTEXITCODE -eq 0 -and $probe -match 'MakeAppx') { return @{ Kind = 'winapp' } }
+    if ($probe -match 'MakeAppx') { return @{ Kind = 'winapp' } }
 
     return $null
 }
@@ -268,6 +269,7 @@ if ($makeappx) {
     else {
         & winapp tool -- makeappx unpack /p $packagePath /d $extracted /o | Out-Host
     }
+    # unpack reports real failures with a non-zero exit, unlike /?, so this one is checked.
     if ($LASTEXITCODE -ne 0) { throw "makeappx unpack failed ($LASTEXITCODE)" }
     if (-not (Test-Path -LiteralPath (Join-Path $extracted 'AppxManifest.xml'))) {
         throw "makeappx could not unpack $packagePath into $extracted; cannot verify the package contents."

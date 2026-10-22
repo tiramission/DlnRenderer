@@ -83,46 +83,43 @@ jobs:
         shell: pwsh
         run: ./scripts/fetch-libmpv.ps1 -Download
 
-      # winapp packages and signs the MSIX and is not on the runner image. Install the portable
-      # build pinned to the version this project was verified against, and check the SHA-256 from
-      # the winget manifest instead of trusting whatever the network returned.
-      - name: Install winapp CLI (portable, pinned)
-        shell: pwsh
-        run: |
-          $url = 'https://github.com/microsoft/winappcli/releases/download/v0.7.1/winappcli-x64.zip'
-          $expected = 'd925d1e32cdc320b6d271f653fd2cd3c05b5d7558deb20d1b548bead77900fcf'
-          $zip = Join-Path $env:RUNNER_TEMP 'winappcli-x64.zip'
-          $dest = Join-Path $env:RUNNER_TEMP 'winapp'
-          Invoke-WebRequest -Uri $url -OutFile $zip
-          $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actual -ne $expected) { throw "winapp archive hash mismatch: $actual" }
-          Expand-Archive -Path $zip -DestinationPath $dest -Force
-          if (-not (Test-Path (Join-Path $dest 'winapp.exe'))) { throw 'winapp.exe not in the archive' }
-          echo $dest | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          & (Join-Path $dest 'winapp.exe') --version
+      # winapp packages and signs the MSIX and is not on the runner image. Microsoft ships a
+      # setup action for exactly this case ("For CI/CD pipelines, use the setup-WinAppCli action",
+      # learn.microsoft.com/windows/apps/dev-tools/winapp-cli), so use it rather than a hand-rolled
+      # download that would have to be re-verified on every upstream release. The version is
+      # pinned: this project was verified against 0.7.1, and a silent major bump would change the
+      # packaging behaviour of a release that already passed.
+      - name: Install winapp CLI
+        uses: microsoft/setup-WinAppCli@v0.2
+        with:
+          version: 'v0.7.1'
 
-      # winapp drives makeappx/signtool, and which SDK version a machine has decides whether those
-      # tools resolve at all. The runner image ships Windows SDKs but not necessarily the one the
-      # package is built against, and winapp can provision Build Tools itself on first use.
-      # Doing it here, explicitly, means a toolchain problem fails this one step with a clear
-      # message instead of surfacing later as an opaque "SignerSign() failed" mid-package.
+      - name: Show winapp version
+        shell: pwsh
+        run: winapp --version
+
+      # winapp drives makeappx/signtool, and which SDK a machine has decides whether those tools
+      # resolve at all. A runner carries a fixed set of SDK versions, and winapp provisions Build
+      # Tools itself on first use - so doing it here, once, turns a toolchain problem into a clear
+      # failure in this step instead of an opaque "SignerSign() failed" during packaging.
       #
-      # That failure is real and was observed on a developer machine the first time signing ran:
-      # "Error information: \"Error: SignerSign() failed.\" (-2147024883/0x8007000d)". Clearing it
-      # took a warm toolchain, which is exactly why this step exists rather than a retry loop.
+      # Availability is judged by the printed tool banner, not by $LASTEXITCODE: makeappx /? exits
+      # 1 even when it runs perfectly, so a status check reports a working toolchain as broken.
+      # That mistake failed a real run before this note existed.
       - name: Warm the packaging toolchain
         shell: pwsh
         timeout-minutes: 15
         run: |
-          # Capture output into a variable, not a pipeline: $LASTEXITCODE belongs to the last
-          # native call, and piping into Select-Object would report the cmdlet's status instead.
-          $makeappx = (& winapp tool -- makeappx /? 2>&1 | Out-String)
-          if ($LASTEXITCODE -ne 0 -or $makeappx -notmatch 'MakeAppx') { throw "makeappx is not available through winapp ($LASTEXITCODE)" }
-          Write-Host ($makeappx -split "`n" | Select-Object -First 3)
+          function Assert-Tool(string $Name, string $Marker) {
+              $output = & winapp tool -- $Name /? 2>&1 | Out-String
+              if ($output -notmatch $Marker) {
+                  throw "$Name is not available through winapp. Output: $output"
+              }
+              Write-Host ($output -split "`n" | Where-Object { $_.Trim() } | Select-Object -First 2)
+          }
 
-          $signtool = (& winapp tool -- signtool /? 2>&1 | Out-String)
-          if ($LASTEXITCODE -ne 0 -or $signtool -notmatch 'signtool') { throw "signtool is not available through winapp ($LASTEXITCODE)" }
-          Write-Host ($signtool -split "`n" | Select-Object -First 3)
+          Assert-Tool 'makeappx' 'MakeAppx'
+          Assert-Tool 'signtool' 'signtool'
 
       # The MSIX must be signed by a certificate the user trusts, and this build has no CA
       # certificate. A dev certificate is generated per run with the Publisher taken from the
