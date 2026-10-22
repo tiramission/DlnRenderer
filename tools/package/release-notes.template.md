@@ -12,8 +12,8 @@ and need the .NET 10 desktop runtime.
 
 ### MSIX (per-user, no admin needed to install)
 
-This build is signed with a **development certificate**, not a CA certificate. Trust it once, as
-administrator:
+The package is signed, so Windows can install it, but with a **development certificate** rather than
+one from a CA. Trust it once, as administrator:
 
 ```powershell
 Import-Certificate -FilePath DlnRenderer-dev.cer -CertStoreLocation Cert:\LocalMachine\Root

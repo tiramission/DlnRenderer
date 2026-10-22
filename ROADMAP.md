@@ -550,7 +550,7 @@ D4/D5 的前提是控制端真的会提供这些信息——若 D1 数据显示�
 | # | 任务 | 结论 | 证据 |
 | --- | --- | --- | --- |
 | E1 | 决定分发形式 | **完成**：绿色包 + 安装脚本；**用户级 MSIX 亦为正式交付目标**（E2 修订） | `docs/packaging.md`。早期"不做 MSIX"基于 full-trust 子进程这一唯一已知路径，已推翻；曾试 `desktop7:Service`（SCM 托管）但服务落 session 0 导致投屏无画面，已放弃，改用户级包，详见 `docs/msix-assessment.md` |
-| E2 | Publisher / 版本号 / 图标 | **部分完成**：版本号由 `Directory.Build.props` 统一为 `0.1.0`（设备描述已显示 `modelNumber 0.1.0`），MSIX 渠道补齐了缺失的 Assets；**Publisher 仍未定**，需要代码签名证书（F5） | 见下"未完成" |
+| E2 | Publisher / 版本号 / 图标 | **完成（CA 签名除外）**：版本号由 `Directory.Build.props` 统一（现为 `0.2.0`，MSIX 身份 `0.2.0.0`），MSIX 渠道补齐了 Assets；Publisher 固定为 dev 证书值 `CN=AppPublisher`，证书已入仓（指纹 `8781E2D1…`）。**CA 证书仍缺**（F5） | `docs/packaging.md` §5、§7 |
 | E3 | 构建脚本产出可安装包 | **完成** | `tools/package/build-dist.ps1`：发布 App+Service（Release/win-x64/框架依赖）、复制 libmpv 与 Assets、校验产物完整性（缺 exe / native DLL / 图标即失败）。实测产出 210 MB 文件夹 |
 | E4 | 防火墙规则 | **完成** | `tools/package/firewall-rules.ps1`：UDP 1900 + TCP 18090（`ServiceStartupOptions.DefaultHttpPort`），仅专用/域网络，服务规则限定到 exe。**已实测放通真实设备**：安装后日志出现 `ssdp answered 6 target(s) ... to 192.168.1.12` |
 | E5 | 卸载清理 | **完成** | `tools/package/uninstall.ps1`：先 IPC `Shutdown`（不是 kill，避免 SSDP socket 进入 TIME_WAIT）→ 终止残留进程 → 删防火墙规则 → 删数据目录 → 删快捷方式与启动项 → 删安装目录。实测卸载后：数据目录、快捷方式、防火墙规则（计数 0）、安装目录全部不存在 |
@@ -560,8 +560,8 @@ D4/D5 的前提是控制端真的会提供这些信息——若 D1 数据显示�
 
 **未完成 / 阻塞项**
 
-- **Publisher 与代码签名**：`Package.appxmanifest` 仍是 `CN=AppPublisher`。真实 Publisher DN
-  必须来自代码签名证书，归属阶段 F5。未签名前不应宣称可对外分发。
+- **CA 代码签名**：Publisher 现固定为 `CN=AppPublisher`（dev 证书，私钥公开在仓库中）。
+  包可以用，且已验证原地升级；但该签名**不证明来源**，正式对外分发仍需 CA 证书（阶段 F5）。
 - **干净机器验证**：安装三步全部在开发机完成（已具备 .NET 运行时与 Windows App Runtime）。
   干净虚拟机 / Windows Sandbox 中的首次运行未验证。
 - **Windows 10 未测**。

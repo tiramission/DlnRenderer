@@ -34,8 +34,8 @@ manifest 相关结论来自本机 Windows SDK 的 schema（`Windows Kits\10\Incl
 | 6 | libmpv 随包分发（GPL） | 实现选择 | 与 MSIX 完整性校验冲突 | `uap10:PackageIntegrity Content Enforcement="off"` 让包内文件可被替换；GPL 义务走阶段 F | manifest 已声明；替换本身未实测 |
 | 7 | 服务写状态文件 | 实现选择 | 用户会话下 `%LOCALAPPDATA%` 可用且**未被虚拟化** | 日志在 `C:\Users\<用户>\AppData\Local\DlnRenderer\logs\` | **已验证** |
 | 8 | 视频窗口 / GUI | 平台限制（重要） | session 0 无桌面 → 不能出画面；用户会话没有这个问题 | 不用 `windows.service` | **已验证**：窗口创建、presenter 切换、播放无 mpv 报错 |
-| 9 | Publisher / 签名 | 平台限制 | MSIX 必须签名才能安装 | 本地 `winapp cert generate` + `cert install`；分发需 CA 证书（阶段 F5） | dev 证书可用；CA 证书未获取 |
-| 10 | 升级身份一致性 | 平台限制 | Publisher + Name 必须一致；**同版本号内容不同会被拒绝**（`0x80073CFB`） | 复用 dev 证书（`-ForceCert` 才重建）；发布必须递增版本 | 已遇到并确认 |
+| 9 | Publisher / 签名 | 平台限制 | MSIX 必须签名才能安装 | dev 证书**入仓固定**（`tools/package/devcert.*`，`8781E2D1…`），CI 用它签名；分发需 CA 证书（阶段 F5） | 已验证安装与原地升级；**私钥公开，签名不证明来源**；CA 证书未获取 |
+| 10 | 升级身份一致性 | 平台限制 | Publisher + Name 必须一致；**同版本号内容不同会被拒绝**（`0x80073CFB`） | 使用固定入库证书（不再每次重建）；发布必须递增版本 | **已验证**：0.1.0 → 0.2.0 原地升级成功（`docs/packaging.md` §7.5） |
 | 11 | 框架依赖 | 平台限制 | 清单必须声明 `Microsoft.WindowsAppRuntime.2`，否则打包后的进程拿不到框架包，首次 WinRT 激活抛 `REGDB_E_CLASSNOTREG`，UI 启动即崩 | `PackageDependency Name="Microsoft.WindowsAppRuntime.2" MinVersion="2.5.1.0"` | **已验证**（修复前每次崩溃，修复后稳定运行） |
 
 ## 4. 为什么放弃 `windows.service`（上一版的错误结论）

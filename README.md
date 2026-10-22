@@ -58,7 +58,35 @@ runner 上拉取评审过的 libmpv（双哈希校验）、安装 ffmpeg 后跑�
 协议层另有真实服务端到端脚本，见 `tools/control-point/`；
 媒体兼容性实测见 `tools/media-compat/`；安装/卸载脚本见 `tools/package/`。
 
-### 打包
+### 下载与安装（发布版）
+
+从 [Releases](https://github.com/tiramission/DlnRenderer/releases) 下载，两种方式任选：
+
+**绿色包**
+
+1. 解压 `DlnRenderer-<版本>-win-x64.zip`
+2. 以管理员 PowerShell 运行 `install.ps1`（复制到 Program Files、添加防火墙规则、创建快捷方式）
+3. 启动 `DlnRenderer.exe`，在局域网内的 DLNA 控制端里选这台设备投屏
+
+**MSIX（用户级，安装本身不需要管理员）**
+
+```powershell
+# 一次性：信任发布证书（需要管理员）
+Import-Certificate -FilePath .\DlnRenderer-dev.cer -CertStoreLocation Cert:\LocalMachine\Root
+# 安装（当前用户）
+Add-AppxPackage -Path .\DlnRenderer-<版本>-win-x64.msix
+```
+
+证书固定不变，**信任一次即可**，之后每个版本直接在上一版上覆盖升级。
+
+> ⚠️ 该证书的私钥公开在仓库中，所以它只代表身份标签（`CN=AppPublisher`），**不代表来源**。
+> 验证来源请核对发布页的 `SHA256SUMS-assets.txt` 或 GitHub 显示的 asset digest。
+> 正式 CA 签名为阶段 F5 的遗留项，见 [docs/packaging.md](docs/packaging.md) §5。
+
+前置条件：Windows 10 1809+ / Windows 11（x64）、.NET 10 桌面运行时；MSIX 还需
+Windows App Runtime 2.5.1+（清单已声明，缺失时安装器会直接报错而不是装完再崩）。
+
+### 自行打包
 
 ```powershell
 pwsh tools/package/build-dist.ps1   # 绿色包 → dist/DlnRenderer
@@ -76,7 +104,7 @@ pwsh tools/package/build-msix.ps1   # MSIX → dist/msix/DlnRenderer-x64.msix
 | 项 | 说明 |
 | --- | --- |
 | **开机启动** | 设置页开关已接入：未打包走 HKCU Run（安装形态已实测，阶段 E），打包（MSIX）走 `StartupTask` API（仅验证到编译，**未做注销/重启实测**）；"登录后自动启动并可直接投屏"尚未做完整重启验证 |
-| **安装包** | 有绿色包 + 安装脚本与**用户级 MSIX 包**（`tools/package/`，见 [docs/packaging.md](docs/packaging.md)）。MSIX 以当前用户安装、不注册 Windows 服务，服务由 UI 在用户会话里拉起；**均未经干净机器验证、未代码签名**，MSIX 的开机启动（`StartupTask`）未做重启实测，`Package.appxmanifest` 的 Publisher 仍是 dev 证书值 |
+| **安装包** | 有绿色包 + 安装脚本与**用户级 MSIX 包**（`tools/package/`，见 [docs/packaging.md](docs/packaging.md)）。MSIX 以当前用户安装、不注册 Windows 服务，服务由 UI 在用户会话里拉起；CI 已产出并在本机验证安装与原地升级（`docs/packaging.md` §7.5）。**仍未经干净机器验证**，MSIX 的开机启动（`StartupTask`）未做重启实测，Publisher 仍是 dev 证书值而非 CA |
 | **字幕与多音轨** | 播放器层无字幕加载与音轨选择接口 |
 | **播放队列** | 单媒体模型，`NextURI` 恒为空 |
 | **网络接口变化的真实拔插验证** | 已监听 `NetworkAddressChanged` 并增量增删组播成员（单元测试覆盖），但没有真实拔插网线/切换 Wi-Fi 的验证记录 |

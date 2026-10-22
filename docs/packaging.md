@@ -123,8 +123,14 @@ SCM 托管的服务运行在 **session 0**，那里没有用户桌面，GPU 交�
 | `prerelease` | 是否标记为预发布 |
 
 ```powershell
-gh workflow run release.yml -f version=0.1.0 -f publish=true -f prerelease=true
+# 正式版
+gh workflow run release.yml -f version=0.2.0 -f publish=true -f prerelease=false
+# 预发布（冒烟验证用）
+gh workflow run release.yml -f version=0.2.1 -f publish=true -f prerelease=true
 ```
+
+发正式版前必须把 `Directory.Build.props` 的 `<Version>` 与 `Package.appxmanifest` 的
+`Identity Version`（三位版本 + `.0`）一起改上去，否则 workflow 第一步就失败。
 
 ### 7.2 步骤
 
@@ -166,7 +172,7 @@ gh workflow run release.yml -f version=0.1.0 -f publish=true -f prerelease=true
 # 1. 一次性信任（管理员）
 Import-Certificate -FilePath .\DlnRenderer-dev.cer -CertStoreLocation Cert:\LocalMachine\Root
 # 2. 安装（当前用户，无需提权）
-Add-AppxPackage -Path .\DlnRenderer-0.1.0-win-x64.msix
+Add-AppxPackage -Path .\DlnRenderer-<版本>-win-x64.msix
 ```
 
 ### 7.5 实测（2026-10-22）
