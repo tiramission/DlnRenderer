@@ -16,11 +16,14 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      # v5+ of both actions target node24; the v4 tags target node20 and now run under a forced
+      # node24 with a deprecation annotation on every job. Major tags are the supported pinning
+      # style here, matching what the runner image is tested against.
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           # global.json pins 10.0.402 with latestFeature; install the feature band, not the exact
           # patch, so a runner image without that build still works.

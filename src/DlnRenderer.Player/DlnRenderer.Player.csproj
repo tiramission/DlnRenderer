@@ -13,9 +13,12 @@
   </ItemGroup>
 
   <!--
-    libmpv is a native DLL and is NOT vendored in this repository: it is GPL-2.0-or-later and
-    must not be redistributed without a licensing decision. scripts/fetch-libmpv.ps1 copies a
-    verified local build into this folder for development. See docs/architecture.md.
+    libmpv is a native DLL and is NOT vendored in this repository: it is a 116 MiB GPL-2.0-or-later
+    binary, and the project ships it in distributions rather than in git. The licensing decision
+    is made (docs/architecture.md §17.1): the project is GPL-2.0-or-later too, so shipping the DLL
+    is what the license expects, and THIRD-PARTY-NOTICES.md tells recipients what they got.
+    scripts/fetch-libmpv.ps1 copies a verified build into this folder; the warning below is the
+    reminder for a checkout that has not run it yet, not a licensing caveat.
   -->
   <ItemGroup>
     <None Include="native\x64\libmpv-2.dll"
@@ -24,8 +27,13 @@
           Link="libmpv-2.dll" />
   </ItemGroup>
 
+  <!--
+    This must stay a warning, never an error: a checkout without the DLL still builds every
+    project, it just cannot play. CI runs the fetch script, so the warning does not appear there -
+    which is why a warning in a CI log means the fetch step stopped working and needs looking at.
+  -->
   <Target Name="WarnWhenLibmpvMissing" BeforeTargets="Build" Condition="!Exists('native\x64\libmpv-2.dll')">
-    <Warning Text="libmpv-2.dll is missing from src/DlnRenderer.Player/native/x64. Build succeeds, but playback will fail at runtime. Run scripts/fetch-libmpv.ps1." />
+    <Warning Text="libmpv-2.dll is missing from src/DlnRenderer.Player/native/x64. Build succeeds, but playback will fail at runtime. Run scripts/fetch-libmpv.ps1 (add -Download if there is no local Scoop mpv-dev)." />
   </Target>
 
 </Project>
