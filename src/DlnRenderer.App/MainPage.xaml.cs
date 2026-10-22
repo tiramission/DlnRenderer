@@ -30,6 +30,9 @@ public sealed partial class MainPage : Page
     /// </summary>
     private static readonly TimeSpan EndOfCastGrace = TimeSpan.FromSeconds(4);
 
+    /// <summary>Corner radius of an embedded picture, in DIPs; matches the cards around it.</summary>
+    private const double PictureCornerRadius = 8;
+
     private bool _suppressPositionSync;
     private bool _suppressVolumeSync;
     private bool _initialized;
@@ -274,6 +277,12 @@ public sealed partial class MainPage : Page
             Y = (int)Math.Round(top * scale),
             Width = (int)Math.Round(width * scale),
             Height = (int)Math.Round(height * scale),
+
+            // Fullscreen covers the screen, where rounded corners would leave four holes to the
+            // desktop; in a window the picture matches the cards around it.
+            CornerRadius = App.MainWindow?.IsFullScreen == true
+                ? 0
+                : (int)Math.Round(PictureCornerRadius * scale),
         };
     }
 

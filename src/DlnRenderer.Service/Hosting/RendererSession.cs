@@ -143,6 +143,11 @@ public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsy
             lastKnownVideo = _lastKnownVideo;
         }
 
+        // Logged because a presentation change is otherwise invisible in the service log: when the
+        // picture ends up somewhere unexpected, this line says what the UI actually asked for.
+        _log($"video target: mode={effective.Mode} enabled={effective.Enabled} host=0x{effective.HostWindow:X} " +
+             $"rect={effective.X},{effective.Y} {effective.Width}x{effective.Height}");
+
         _presenter?.SetTarget(effective);
 
         PlayerVisibility(

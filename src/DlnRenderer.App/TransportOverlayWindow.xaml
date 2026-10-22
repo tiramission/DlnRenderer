@@ -13,11 +13,12 @@
         windows above the XAML content of their parent - so XAML controls can never be drawn on top
         of the picture. An owned window is the only way to put our own controls there.
 
-        The background fills the window edge to edge: the window itself is cut to a rounded shape
-        with SetWindowRgn, so any inset here would show as a rectangle of window background.
-        A dark HUD reads as "player controls" over any picture, in either theme.
+        Colours come from the theme, like every other card in the app: a hard-coded dark panel looked
+        out of place next to the rest of the interface. The background fills the window edge to edge
+        because the window itself is cut to a rounded shape with SetWindowRgn - any inset would show
+        as a rectangle of window background.
     -->
-    <Grid Padding="16,0" Background="#E61A1A1A">
+    <Grid Padding="16,0" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
         <StackPanel
             VerticalAlignment="Center"
             Orientation="Horizontal"
@@ -31,7 +32,7 @@
                 BorderThickness="0"
                 Click="OnPlayPauseClick"
                 CornerRadius="20"
-                Foreground="White">
+                Foreground="{ThemeResource TextFillColorPrimaryBrush}">
                 <FontIcon FontSize="15" Glyph="&#xE768;" />
             </Button>
 
@@ -44,7 +45,7 @@
                 BorderThickness="0"
                 Click="OnStopClick"
                 CornerRadius="20"
-                Foreground="White">
+                Foreground="{ThemeResource TextFillColorPrimaryBrush}">
                 <FontIcon FontSize="15" Glyph="&#xE71A;" />
             </Button>
 
@@ -53,7 +54,7 @@
                 Width="54"
                 Margin="8,0,0,0"
                 VerticalAlignment="Center"
-                Foreground="White"
+                Foreground="{ThemeResource TextFillColorPrimaryBrush}"
                 Text="00:00"
                 TextAlignment="Right" />
 
@@ -71,7 +72,7 @@
                 x:Name="TotalText"
                 Width="54"
                 VerticalAlignment="Center"
-                Foreground="White"
+                Foreground="{ThemeResource TextFillColorPrimaryBrush}"
                 Text="00:00" />
 
             <Button
@@ -83,7 +84,7 @@
                 BorderThickness="0"
                 Click="OnMuteClick"
                 CornerRadius="20"
-                Foreground="White">
+                Foreground="{ThemeResource TextFillColorPrimaryBrush}">
                 <FontIcon FontSize="15" Glyph="&#xE767;" />
             </Button>
 
@@ -96,7 +97,7 @@
                 BorderThickness="0"
                 Click="OnFullScreenClick"
                 CornerRadius="20"
-                Foreground="White"
+                Foreground="{ThemeResource TextFillColorPrimaryBrush}"
                 ToolTipService.ToolTip="全屏 / 退出全屏">
                 <FontIcon FontSize="15" Glyph="&#xE740;" />
             </Button>

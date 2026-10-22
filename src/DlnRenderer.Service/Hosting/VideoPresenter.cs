@@ -389,6 +389,9 @@ public sealed class VideoPresenter : IAsyncDisposable, IMonitorEventsSink
             DetachFromHost();
         }
 
+        // Fullscreen covers a monitor; a rounded corner would leave four holes to the desktop.
+        ApplyCornerRegion(0, 0, 0);
+
         var monitors = MonitorInterop.GetMonitors();
         var current = ReadCurrentBounds();
         var selected = FullscreenGeometry.SelectMonitor(
@@ -467,8 +470,6 @@ public sealed class VideoPresenter : IAsyncDisposable, IMonitorEventsSink
     private void ShowInMode()
     {
         // The UI said it has nowhere to show the picture (its player page is not on screen).
-        // Hiding is the whole point: falling back to fullscreen here is what threw a cast onto the
-        // whole screen when the user clicked the settings icon.
         if (!_target.Enabled)
         {
             ApplyHidden();
@@ -478,6 +479,19 @@ public sealed class VideoPresenter : IAsyncDisposable, IMonitorEventsSink
         if (_target.CanEmbed)
         {
             ApplyEmbedded(_target);
+            return;
+        }
+
+        // Embedded mode never falls back to the fullscreen overlay.
+        //
+        // It used to, on the theory that "no picture anywhere" looks broken. In practice the
+        // fallback fires in situations the user did not ask for - a page that has not laid out yet,
+        // a navigation in progress - and a cast that suddenly covers the whole screen is far more
+        // alarming than one that is briefly missing. The fullscreen overlay is only ever used when
+        // the mode actually is fullscreen (the default when no UI is attached at all).
+        if (_target.Mode == DisplayMode.Embedded)
+        {
+            ApplyHidden();
             return;
         }
 
@@ -560,6 +574,11 @@ public sealed class VideoPresenter : IAsyncDisposable, IMonitorEventsSink
             Math.Max(1, target.Height),
             SwpShowWindow | SwpFrameChanged | SwpNoActivate | SwpNoZOrder);
 
+        // The page draws its cards with rounded corners; a square picture inside that layout looks
+        // like a hole punched in the window. The window is clipped to the same shape, which also
+        // clips the mpv surface inside it.
+        ApplyCornerRegion(Math.Max(1, target.Width), Math.Max(1, target.Height), target.CornerRadius);
+
         _visible = true;
     }
 
@@ -588,6 +607,34 @@ public sealed class VideoPresenter : IAsyncDisposable, IMonitorEventsSink
         // The rectangle is meaningless now (1x1 keeps it off screen without destroying it); the next
         // fullscreen show recomputes it from the monitors.
         _ = SetWindowPos(_window, 0, 0, 0, 1, 1, SwpNoZOrder | SwpNoActivate);
+    }
+
+    /// <summary>
+    /// Cuts the window to a rounded rectangle, or squares it off again when the radius is 0.
+    /// </summary>
+    /// <remarks>
+    /// A window region clips everything the window paints, including the mpv surface it hosts, which
+    /// is why the picture itself gets the corners. The system owns the region once set, so it is not
+    /// deleted here; passing 0 removes it and restores the full rectangle.
+    /// </remarks>
+    private void ApplyCornerRegion(int width, int height, int radius)
+    {
+        if (_window == 0)
+        {
+            return;
+        }
+
+        if (radius <= 0)
+        {
+            _ = SetWindowRgn(_window, 0, redraw: true);
+            return;
+        }
+
+        var region = CreateRoundRectRgn(0, 0, width, height, radius * 2, radius * 2);
+        if (region != 0)
+        {
+            _ = SetWindowRgn(_window, region, redraw: true);
+        }
     }
 
     private void SetStyle(int style)
@@ -972,6 +1019,18 @@ public sealed class VideoPresenter : IAsyncDisposable, IMonitorEventsSink
     /// <summary>Re-parents a window. Works across processes, which is how embedding is implemented.</summary>
     [DllImport("user32.dll", SetLastError = true)]
     private static extern nint SetParent(nint child, nint newParent);
+
+    [DllImport("gdi32.dll")]
+    private static extern nint CreateRoundRectRgn(
+        int left,
+        int top,
+        int right,
+        int bottom,
+        int widthEllipse,
+        int heightEllipse);
+
+    [DllImport("user32.dll")]
+    private static extern int SetWindowRgn(nint hwnd, nint region, [MarshalAs(UnmanagedType.Bool)] bool redraw);
 
     [DllImport("user32.dll")]
     private static extern nint SetTimer(nint hwnd, nint timerId, uint interval, nint procedure);

@@ -50,6 +50,11 @@ public sealed partial class TransportOverlayWindow : Window
 
     private const uint DwmColorNone = 0xFFFFFFFE;
 
+    /// <summary>DWMWA_NCRENDERING_POLICY and DWMNCRP_DISABLED.</summary>
+    private const int DwmwaNcRenderingPolicy = 2;
+
+    private const int DwmNcRenderingDisabled = 1;
+
     private readonly nint _handle;
     private readonly DispatcherTimer _idleTimer = new() { Interval = TimeSpan.FromMilliseconds(150) };
     private bool _suppressSlider;
@@ -79,8 +84,7 @@ public sealed partial class TransportOverlayWindow : Window
 
         // Windows 11 draws a thin frame around every window, including borderless ones. Around a
         // rounded bar it reads as a stray ring, so it is removed explicitly.
-        var noBorder = DwmColorNone;
-        _ = DwmSetWindowAttribute(_handle, DwmwaBorderColor, ref noBorder, sizeof(int));
+        RemoveWindowFrame();
 
         AppWindow.Title = "DlnRenderer 播放控制";
 
@@ -113,6 +117,11 @@ public sealed partial class TransportOverlayWindow : Window
         _shown = true;
         Touch();
 
+        // Re-applied after the window is visible: WinUI refreshes the window's frame attributes when
+        // it shows the window, which quietly undoes the frame removal done in the constructor. The
+        // leftover frame is the pale ring that was visible around the bar.
+        RemoveWindowFrame();
+
         if (!_idleTimer.IsEnabled)
         {
             _idleTimer.Start();
@@ -138,6 +147,31 @@ public sealed partial class TransportOverlayWindow : Window
         _idleTimer.Stop();
         _shown = false;
         AppWindow.Hide();
+    }
+
+    /// <summary>
+    /// Removes the system-drawn frame and non-client rendering around the bar.
+    /// </summary>
+    /// <remarks>
+    /// Two attributes, because they fail independently: the border colour is honoured by Windows 11
+    /// only, and disabling non-client rendering covers the shadow and the resize frame on builds that
+    /// ignore the colour. Failures are logged rather than thrown - a stray ring is cosmetic.
+    /// </remarks>
+    private void RemoveWindowFrame()
+    {
+        var noBorder = DwmColorNone;
+        var border = DwmSetWindowAttribute(_handle, DwmwaBorderColor, ref noBorder, sizeof(int));
+        if (border < 0)
+        {
+            DiagnosticsLog.Write($"overlay: DWMWA_BORDER_COLOR failed (0x{border:X8})");
+        }
+
+        var noNonClient = (uint)DwmNcRenderingDisabled;
+        var rendering = DwmSetWindowAttribute(_handle, DwmwaNcRenderingPolicy, ref noNonClient, sizeof(uint));
+        if (rendering < 0)
+        {
+            DiagnosticsLog.Write($"overlay: DWMWA_NCRENDERING_POLICY failed (0x{rendering:X8})");
+        }
     }
 
     private void ApplyLayout(MainWindow owner)

@@ -101,11 +101,24 @@ public sealed record VideoTarget
     /// </remarks>
     public bool Enabled { get; init; } = true;
 
-    /// <summary>True when there is a window to embed into.</summary>
+    /// <summary>
+    /// True when there is a window to embed into.
+    /// </summary>
     public bool HasHost => HostWindow != 0;
 
     /// <summary>True when the reserved area is large enough to draw into.</summary>
     public bool HasArea => Width > 1 && Height > 1;
+
+    /// <summary>
+    /// Corner radius for the embedded picture, in physical pixels. 0 leaves it square (fullscreen).
+    /// </summary>
+    /// <remarks>
+    /// The UI sends this because it is the only side that knows both the design radius and the DPI
+    /// scale. The service rounds its own window, so the video is clipped to the same shape the page
+    /// would otherwise draw - a square picture inside a rounded layout reads as a hole punched in
+    /// the window.
+    /// </remarks>
+    public int CornerRadius { get; init; }
 
     /// <summary>True when this target can actually be honoured in embedded mode.</summary>
     public bool CanEmbed => Enabled && Mode == DisplayMode.Embedded && HasHost && HasArea;

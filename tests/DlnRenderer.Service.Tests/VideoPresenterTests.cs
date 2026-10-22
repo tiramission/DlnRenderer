@@ -471,17 +471,33 @@ public class VideoPresenterTests
     }
 
     [Fact]
-    public async Task Embedded_without_a_host_falls_back_to_fullscreen()
+    public async Task Embedded_without_a_usable_area_hides_instead_of_going_fullscreen()
     {
         await using var presenter = await VideoPresenter.StartAsync();
 
-        // The UI is starting, or its page has not laid out yet: playing with no picture anywhere
-        // would look like a broken renderer, so the overlay is used instead.
+        // Embedded mode covers a rectangle inside the application window. When the UI has not
+        // reported one yet - starting up, a page still laying out, a navigation in flight - the
+        // picture waits rather than jumping to a fullscreen overlay the user never asked for.
         presenter.SetTarget(new VideoTarget { Mode = DisplayMode.Embedded });
         presenter.Show();
         Assert.True(presenter.WaitForIdle(IdleTimeout));
 
         Assert.Equal(0, presenter.EmbeddedHost);
+        Assert.Equal("hidden", presenter.PresentationState);
+        Assert.False(presenter.IsVisible);
+    }
+
+    [Fact]
+    public async Task Fullscreen_mode_with_no_host_still_uses_the_overlay()
+    {
+        await using var presenter = await VideoPresenter.StartAsync();
+
+        // The service runs with no UI attached: fullscreen is the only place the picture can go,
+        // and that is what the mode says.
+        presenter.SetTarget(new VideoTarget { Mode = DisplayMode.Fullscreen });
+        presenter.Show();
+        Assert.True(presenter.WaitForIdle(IdleTimeout));
+
         Assert.Equal("fullscreen", presenter.PresentationState);
         Assert.True(presenter.IsVisible);
     }

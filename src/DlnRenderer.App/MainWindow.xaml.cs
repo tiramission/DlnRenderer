@@ -1,3 +1,6 @@
+using DlnRenderer.Core.Ipc;
+using DlnRenderer.Core.Models;
+using DlnRenderer.Services;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -160,9 +163,45 @@ public sealed partial class MainWindow : Window
             _ => typeof(MainPage),
         };
 
-        if (RootFrame.CurrentSourcePageType != target)
+        if (RootFrame.CurrentSourcePageType == target)
         {
-            RootFrame.Navigate(target);
+            return;
+        }
+
+        // Suspending the picture here rather than in the page's Unloaded handler makes it part of
+        // the navigation itself: no matter how the framework orders unload and load, the service is
+        // told before the new page appears. The page reports its rectangle again on load.
+        if (target != typeof(MainPage))
+        {
+            SuspendVideoPresentation();
+        }
+
+        RootFrame.Navigate(target);
+    }
+
+    /// <summary>
+    /// Tells the service the player page is no longer on screen, without changing the display mode.
+    /// </summary>
+    /// <remarks>
+    /// Sends a suspended target, not a host-less one: a target without a host means "there is no UI"
+    /// and is answered with the fullscreen overlay, which is not what opening the settings page is.
+    /// </remarks>
+    private static void SuspendVideoPresentation()
+    {
+        _ = SendSuspendedTargetAsync();
+    }
+
+    private static async Task SendSuspendedTargetAsync()
+    {
+        try
+        {
+            await App.Client.SendAsync(
+                IpcCommands.SetVideoTarget,
+                videoTarget: new VideoTarget { Mode = App.Settings.DisplayMode, Enabled = false });
+        }
+        catch (Exception ex)
+        {
+            DiagnosticsLog.Write($"suspend video target failed: {ex.Message}");
         }
     }
 }
