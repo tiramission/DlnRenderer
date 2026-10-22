@@ -1,0 +1,286 @@
+name: Release
+
+# Builds the two shipping channels (portable folder + per-user MSIX) and publishes them as a
+# GitHub Release. Manual only: a release is a deliberate act, not a side effect of a push.
+#
+# dist/ is gitignored because it carries libmpv, so nothing built here can be committed: the
+# release assets ARE the artifact. docs/packaging.md explains what each one is for.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, e.g. 0.1.0 (must match <Version> in Directory.Build.props)'
+        required: true
+        type: string
+      publish:
+        description: 'Create the GitHub Release (off = build and keep workflow artifacts only)'
+        required: true
+        type: boolean
+        default: false
+      prerelease:
+        description: 'Mark the release as a pre-release'
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: write # create the release and upload assets
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Show toolchain
+        shell: pwsh
+        run: |
+          dotnet --info
+          Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -ErrorAction SilentlyContinue |
+              Select-Object -ExpandProperty Name
+
+      # The tag, the assembly version and the MSIX identity must agree, or Windows treats an
+      # upgrade as a different product. Directory.Build.props is the single source of truth, so a
+      # release whose version the repository does not declare is refused here rather than found
+      # later by a user whose install fails to upgrade.
+      - name: Verify the version matches the repository
+        shell: pwsh
+        run: |
+          $version = '${{ inputs.version }}'
+          $declared = ([regex]::Match((Get-Content Directory.Build.props -Raw), '<Version>([^<]+)</Version>')).Groups[1].Value
+          if ($declared -ne $version) {
+              throw "input version '$version' does not match Directory.Build.props ($declared). Bump the version first."
+          }
+
+          # The MSIX identity carries a four-part version, and Windows compares it on upgrade:
+          # a package whose identity did not move refuses to replace the previous one.
+          $manifest = Get-Content 'src/DlnRenderer.App/Package.appxmanifest' -Raw
+          $msixVersion = ([regex]::Match($manifest, 'Identity[\s\S]*?Version="([^"]+)"')).Groups[1].Value
+          $expectedMsix = "$version.0"
+          if ($msixVersion -ne $expectedMsix) {
+              throw "Package.appxmanifest declares $msixVersion but $version implies $expectedMsix. Update the manifest so the MSIX identity matches the release."
+          }
+          Write-Host "version $declared confirmed (MSIX identity $msixVersion)"
+
+      # Two native inputs, both provisioned rather than assumed. fetch-libmpv.ps1 verifies the
+      # release archive and then the DLL by hash; 7z is what extracts it.
+      - name: Install 7z
+        shell: pwsh
+        run: |
+          choco install 7zip -y --no-progress
+          if (-not (Get-Command 7z -ErrorAction SilentlyContinue)) { throw '7z not found after choco install' }
+          (Get-Command 7z).Source
+
+      - name: Fetch libmpv (pinned, hash-verified)
+        shell: pwsh
+        run: ./scripts/fetch-libmpv.ps1 -Download
+
+      # winapp packages and signs the MSIX and is not on the runner image. Install the portable
+      # build pinned to the version this project was verified against, and check the SHA-256 from
+      # the winget manifest instead of trusting whatever the network returned.
+      - name: Install winapp CLI (portable, pinned)
+        shell: pwsh
+        run: |
+          $url = 'https://github.com/microsoft/winappcli/releases/download/v0.7.1/winappcli-x64.zip'
+          $expected = 'd925d1e32cdc320b6d271f653fd2cd3c05b5d7558deb20d1b548bead77900fcf'
+          $zip = Join-Path $env:RUNNER_TEMP 'winappcli-x64.zip'
+          $dest = Join-Path $env:RUNNER_TEMP 'winapp'
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "winapp archive hash mismatch: $actual" }
+          Expand-Archive -Path $zip -DestinationPath $dest -Force
+          if (-not (Test-Path (Join-Path $dest 'winapp.exe'))) { throw 'winapp.exe not in the archive' }
+          echo $dest | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & (Join-Path $dest 'winapp.exe') --version
+
+      # winapp drives makeappx/signtool, and which SDK version a machine has decides whether those
+      # tools resolve at all. The runner image ships Windows SDKs but not necessarily the one the
+      # package is built against, and winapp can provision Build Tools itself on first use.
+      # Doing it here, explicitly, means a toolchain problem fails this one step with a clear
+      # message instead of surfacing later as an opaque "SignerSign() failed" mid-package.
+      #
+      # That failure is real and was observed on a developer machine the first time signing ran:
+      # "Error information: \"Error: SignerSign() failed.\" (-2147024883/0x8007000d)". Clearing it
+      # took a warm toolchain, which is exactly why this step exists rather than a retry loop.
+      - name: Warm the packaging toolchain
+        shell: pwsh
+        timeout-minutes: 15
+        run: |
+          # Capture output into a variable, not a pipeline: $LASTEXITCODE belongs to the last
+          # native call, and piping into Select-Object would report the cmdlet's status instead.
+          $makeappx = (& winapp tool -- makeappx /? 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0 -or $makeappx -notmatch 'MakeAppx') { throw "makeappx is not available through winapp ($LASTEXITCODE)" }
+          Write-Host ($makeappx -split "`n" | Select-Object -First 3)
+
+          $signtool = (& winapp tool -- signtool /? 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0 -or $signtool -notmatch 'signtool') { throw "signtool is not available through winapp ($LASTEXITCODE)" }
+          Write-Host ($signtool -split "`n" | Select-Object -First 3)
+
+      # The MSIX must be signed by a certificate the user trusts, and this build has no CA
+      # certificate. A dev certificate is generated per run with the Publisher taken from the
+      # manifest; both the .pfx and a public .cer are published so the package can be installed
+      # without owning the signing key. A CA certificate replaces this before a wider release
+      # (docs/packaging.md §5).
+      - name: Generate the signing certificate
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'devcert.pfx'
+          winapp cert generate --manifest src/DlnRenderer.App/Package.appxmanifest --output $pfx --password password
+          if (-not (Test-Path $pfx)) { throw 'certificate not generated' }
+          winapp cert info $pfx
+          "PFX=$pfx" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build the portable distribution
+        shell: pwsh
+        run: ./tools/package/build-dist.ps1
+
+      - name: Build and verify the MSIX
+        shell: pwsh
+        run: ./tools/package/build-msix.ps1 -Cert $env:PFX
+
+      # A release nobody can check is a release nobody should install: a hash for every file in
+      # the portable folder, plus a manifest naming the commit and the libmpv fingerprint.
+      - name: Write hashes and the release manifest
+        shell: pwsh
+        run: ./tools/package/hash-release.ps1
+
+      # Zip with the folder name inside, so extracting into Program Files behaves exactly like the
+      # folder build-dist.ps1 produced.
+      - name: Assemble the release assets
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist/assets | Out-Null
+          $version = '${{ inputs.version }}'
+          Compress-Archive -Path dist/DlnRenderer -DestinationPath "dist/assets/DlnRenderer-$version-win-x64.zip" -CompressionLevel Optimal
+          Copy-Item dist/DlnRenderer/SHA256SUMS.txt     'dist/assets/SHA256SUMS-portable.txt'
+          Copy-Item dist/DlnRenderer/release-manifest.json 'dist/assets/release-manifest.json'
+          Copy-Item dist/msix/DlnRenderer-x64.msix      "dist/assets/DlnRenderer-$version-win-x64.msix"
+          Get-ChildItem dist/assets | Format-Table Name, Length
+
+      # The public certificate ships next to the package: a sideloaded MSIX needs its publisher
+      # trusted first, and the user has no other way to learn which certificate to trust.
+      - name: Export the public certificate
+        shell: pwsh
+        run: |
+          $plain = ConvertTo-SecureString 'password' -AsPlainText -Force
+          $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($env:PFX, $plain)
+          $cerPath = Join-Path 'dist/assets' 'DlnRenderer-dev.cer'
+          [IO.File]::WriteAllBytes($cerPath, $cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert))
+          if (-not (Test-Path $cerPath)) { throw 'certificate export produced no file' }
+          Write-Host "thumbprint: $($cert.Thumbprint)"
+          Write-Host "subject:    $($cert.Subject)"
+          Write-Host "expires:    $($cert.NotAfter.ToString('u'))"
+
+      - name: Checksums for the release assets
+        shell: pwsh
+        run: |
+          Push-Location dist/assets
+          $lines = Get-ChildItem -File | Sort-Object Name |
+              Where-Object Name -ne 'SHA256SUMS-assets.txt' |
+              ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $($_.Name)" }
+          [IO.File]::WriteAllText("$PWD\SHA256SUMS-assets.txt", (($lines -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+          Get-Content SHA256SUMS-assets.txt
+          Pop-Location
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: DlnRenderer-${{ inputs.version }}
+          path: dist/assets/*
+          if-no-files-found: error
+
+      # Notes are generated here rather than committed: they restate what was actually built and
+      # how to verify it, and they must not drift from the artifacts sitting next to them.
+      - name: Write the release notes
+        shell: pwsh
+        run: |
+          $sums = Get-Content 'dist/assets/SHA256SUMS-assets.txt' -Raw
+          $notes = @"
+          ## DlnRenderer ${{ inputs.version }}
+
+          DLNA media renderer for Windows 10/11 (x64). Two ways to install; both run the same
+          application and need the .NET 10 desktop runtime.
+
+          ### Portable
+
+          1. Extract ``DlnRenderer-${{ inputs.version }}-win-x64.zip``.
+          2. Run ``install.ps1`` from an elevated PowerShell (copies to Program Files, adds the
+             firewall rules, creates shortcuts).
+          3. Start ``DlnRenderer.exe``. Cast to it from any DLNA control point on your network.
+
+          ### MSIX (per-user, no admin to install)
+
+          This build is signed with a **development certificate**, not a CA certificate. Trust it
+          once, as administrator:
+
+          ````
+          Import-Certificate -FilePath DlnRenderer-dev.cer -CertStoreLocation Cert:\LocalMachine\Root
+          ````
+
+          That certificate is included here as a convenience for testing; trusting it says you
+          trust *this* publisher identity on *this* machine. Then install without elevation:
+
+          ````
+          Add-AppxPackage -Path DlnRenderer-${{ inputs.version }}-win-x64.msix
+          ````
+
+          ### Verify
+
+          Every asset is listed in ``SHA256SUMS-assets.txt``:
+
+          ````
+          Get-FileHash -Algorithm SHA256 -Path *
+          ````
+
+          ### License
+
+          DlnRenderer is **GPL-2.0-or-later**. libmpv, the mpv library that plays the media, is a
+          GPL build and is included; the license texts and the third-party notices are inside both
+          packages, including how to obtain the corresponding source.
+
+          ### Not yet verified
+
+          Real control-point interoperability in this build, Windows 10, ARM64, and a CA-signed
+          certificate. See the repository's docs/testing.md for exactly what was and was not tested.
+
+          ````
+          $sums
+          ````
+          "@
+          # Here-strings keep their indentation; strip the common leading spaces the workflow adds.
+          $notes = ($notes -split "`n" | ForEach-Object { $_.TrimEnd() }) -join "`n"
+          [IO.File]::WriteAllText("$(Resolve-Path dist/assets)\RELEASE-NOTES.md", $notes, (New-Object System.Text.UTF8Encoding($false)))
+          Get-Content "dist/assets/RELEASE-NOTES.md" -TotalCount 5
+
+      - name: Upload release notes
+        uses: actions/upload-artifact@v4
+        with:
+          name: DlnRenderer-${{ inputs.version }}-notes
+          path: dist/assets/RELEASE-NOTES.md
+          if-no-files-found: error
+
+      - name: Create the GitHub Release
+        if: inputs.publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "v${{ inputs.version }}"
+          $files = Get-ChildItem 'dist/assets' -File |
+              Where-Object { $_.Name -ne 'RELEASE-NOTES.md' } |
+              ForEach-Object { $_.FullName }
+          if (-not $files) { throw 'no assets to upload' }
+          $releaseArgs = @('release', 'create', $tag, '--title', "DlnRenderer ${{ inputs.version }}",
+              '--notes-file', 'dist/assets/RELEASE-NOTES.md', '--target', '${{ github.sha }}')
+          if ('${{ inputs.prerelease }}' -eq 'true') { $releaseArgs += '--prerelease' }
+          gh @releaseArgs @files
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed ($LASTEXITCODE)" }
+          gh release view $tag

@@ -198,8 +198,36 @@ if (-not (Test-Path -LiteralPath $packagePath)) { throw "no package produced at 
 Write-Step "verifying the package"
 $signature = Get-AuthenticodeSignature -LiteralPath $packagePath
 Write-Host "  signature: $($signature.Status) ($($signature.SignerCertificate.Subject))" -ForegroundColor Green
+
+# 'Valid' means signed AND the signing chain is already trusted on this machine. A development
+# certificate is never in the root store, so a perfectly signed package reports 'UnknownError'
+# with "chain terminated in an untrusted root" - and treating that as a failure would make every
+# release build red. What has to hold is that the package IS signed by the certificate we just
+# used, because that is the certificate shipped next to it and the one the user trusts. Anything
+# that says the file is unsigned, corrupt or signed by somebody else is a real failure.
+$certThumbprint = if ($certPath -and (Test-Path -LiteralPath $certPath)) {
+    $plain = ConvertTo-SecureString $CertPassword -AsPlainText -Force
+    ([System.Security.Cryptography.X509Certificates.X509Certificate2]::new($certPath, $plain)).Thumbprint
+}
+
+$signedByOurCert = $signature.SignerCertificate -and
+    $certThumbprint -and
+    ($signature.SignerCertificate.Thumbprint -eq $certThumbprint)
+$signaturePresent = $signature.Status -in @('Valid', 'UnknownError', 'UntrustedRoot')
+
+if (-not $signaturePresent) {
+    throw "the package has no usable signature ($($signature.Status): $($signature.StatusMessage))."
+}
+if ($certThumbprint -and -not $signedByOurCert) {
+    throw "the package is signed by $($signature.SignerCertificate.Thumbprint), not by the certificate in use ($certThumbprint)."
+}
+
+Write-Host "  signer thumbprint: $($signature.SignerCertificate.Thumbprint)" -ForegroundColor Green
 if ($signature.Status -ne 'Valid') {
-    Write-Warning "the package is not Valid-signed; it will not install until the certificate is trusted."
+    Write-Host "  not trusted on this machine yet (expected for a development certificate):" -ForegroundColor Yellow
+    Write-Host "    $($signature.StatusMessage)" -ForegroundColor Yellow
+    Write-Host "  installing needs the certificate trusted once, as administrator:" -ForegroundColor Yellow
+    Write-Host "    Import-Certificate -FilePath <the .cer we publish> -CertStoreLocation Cert:\LocalMachine\Root" -ForegroundColor Yellow
 }
 
 # What the manifest must NOT contain matters as much as what it must: a windows.service
@@ -208,13 +236,39 @@ if ($signature.Status -ne 'Valid') {
 # service in the user's own session.
 $extracted = Join-Path $repoRoot "artifacts\msix\verify-$Arch"
 if (Test-Path -LiteralPath $extracted) { Remove-Item -LiteralPath $extracted -Recurse -Force }
-$makeappx = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Filter 'makeappx.exe' -Recurse `
-    -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match "\\x64\\" } | Select-Object -First 1
+# Locate makeappx without assuming an SDK install path. A CI runner may carry a different set of
+# SDK versions than a workstation, and winapp already knows how to fetch/launch Build Tools - so
+# ask it first and fall back to the Kits directory. The verification below is the only guard
+# against shipping a package with a missing executable, so it must not be skipped just because the
+# path differs from the machine it was written on.
+function Resolve-MakeAppx {
+    $onPath = Get-Command 'makeappx' -ErrorAction SilentlyContinue
+    if ($onPath) { return @{ Kind = 'exe'; Path = $onPath.Source } }
+
+    $kits = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Filter 'makeappx.exe' -Recurse `
+        -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match '\\x64\\' } |
+        Sort-Object FullName -Descending | Select-Object -First 1
+    if ($kits) { return @{ Kind = 'exe'; Path = $kits.FullName } }
+
+    # winapp tool can provision and run the SDK tool itself; probe it before giving up.
+    $probe = & winapp tool -- makeappx /? 2>&1 | Out-String
+    if ($LASTEXITCODE -eq 0 -and $probe -match 'MakeAppx') { return @{ Kind = 'winapp' } }
+
+    return $null
+}
+
+$makeappx = Resolve-MakeAppx
 if ($makeappx) {
     # 'unpack' is the current subcommand name; 'extract' was the older one. Run from PowerShell,
     # not Git Bash: the leading slash of '/p' is rewritten to 'P:/' there and makeappx fails with
     # "Unknown command line option".
-    & $makeappx.FullName unpack /p $packagePath /d $extracted /o | Out-Host
+    if ($makeappx.Kind -eq 'exe') {
+        & $makeappx.Path unpack /p $packagePath /d $extracted /o | Out-Host
+    }
+    else {
+        & winapp tool -- makeappx unpack /p $packagePath /d $extracted /o | Out-Host
+    }
+    if ($LASTEXITCODE -ne 0) { throw "makeappx unpack failed ($LASTEXITCODE)" }
     if (-not (Test-Path -LiteralPath (Join-Path $extracted 'AppxManifest.xml'))) {
         throw "makeappx could not unpack $packagePath into $extracted; cannot verify the package contents."
     }
@@ -258,7 +312,10 @@ if ($makeappx) {
     Write-Host "  package contents: ui, service, libmpv and app icon all present" -ForegroundColor Green
 }
 else {
-    Write-Warning "makeappx.exe not found; skipped packaged-manifest verification."
+    # Failing here rather than warning: a package nobody unpacked is a package nobody verified, and
+    # the checks below (no SCM service, runtime dependency, both executables inside) are exactly the
+    # ones whose absence ships a broken release.
+    throw "makeappx is unavailable (not on PATH, not under Windows Kits, not via 'winapp tool'); cannot verify the package."
 }
 
 $size = [math]::Round((Get-Item -LiteralPath $packagePath).Length / 1MB, 1)
