@@ -236,74 +236,25 @@ jobs:
           path: dist/assets/*
           if-no-files-found: error
 
-      # Notes are generated here rather than committed: they restate what was actually built and
-      # how to verify it, and they must not drift from the artifacts sitting next to them.
+      # The prose lives in tools/package/release-notes.template.md, not in a here-string here.
+      # A previous version built the notes inside a PowerShell here-string, where doubled
+      # backticks are literal: every inline `code` span rendered as ``code`` and every fenced
+      # block collapsed. A markdown file cannot be mangled by the shell that reads it.
       - name: Write the release notes
         shell: pwsh
         run: |
-          $sums = Get-Content 'dist/assets/SHA256SUMS-assets.txt' -Raw
-          $notes = @"
-          ## DlnRenderer ${{ inputs.version }}
+          $template = Get-Content 'tools/package/release-notes.template.md' -Raw
+          $sums = (Get-Content 'dist/assets/SHA256SUMS-assets.txt' -Raw).TrimEnd()
+          $notes = $template.Replace('{{VERSION}}', '${{ inputs.version }}').Replace('{{SUMS}}', $sums)
 
-          DLNA media renderer for Windows 10/11 (x64). Two ways to install; both run the same
-          application and need the .NET 10 desktop runtime.
+          # A leftover placeholder means the template changed and this step was not updated; a
+          # release page showing "{{VERSION}}" is exactly the kind of thing nobody notices.
+          if ($notes -match '\{\{[A-Z]+\}\}') {
+              throw "unfilled placeholder in the release notes: $($Matches[0])"
+          }
 
-          ### Portable
-
-          1. Extract ``DlnRenderer-${{ inputs.version }}-win-x64.zip``.
-          2. Run ``install.ps1`` from an elevated PowerShell (copies to Program Files, adds the
-             firewall rules, creates shortcuts).
-          3. Start ``DlnRenderer.exe``. Cast to it from any DLNA control point on your network.
-
-          ### MSIX (per-user, no admin to install)
-
-          This build is signed with a **development certificate**, not a CA certificate. Trust it
-          once, as administrator:
-
-          ````
-          Import-Certificate -FilePath DlnRenderer-dev.cer -CertStoreLocation Cert:\LocalMachine\Root
-          ````
-
-          **Read this before trusting it.** The private key for that certificate is committed in
-          the public repository, so anyone can produce a package Windows will label
-          ``CN=AppPublisher``. Trusting it therefore does not prove a package came from this
-          project — check the SHA-256 in ``SHA256SUMS-assets.txt`` (or this release page) for that.
-          The certificate is stable across releases on purpose, so you only trust it once and
-          upgrades keep working.
-
-          Then install without elevation:
-
-          ````
-          Add-AppxPackage -Path DlnRenderer-${{ inputs.version }}-win-x64.msix
-          ````
-
-          ### Verify
-
-          Every asset is listed in ``SHA256SUMS-assets.txt``:
-
-          ````
-          Get-FileHash -Algorithm SHA256 -Path *
-          ````
-
-          ### License
-
-          DlnRenderer is **GPL-2.0-or-later**. libmpv, the mpv library that plays the media, is a
-          GPL build and is included; the license texts and the third-party notices are inside both
-          packages, including how to obtain the corresponding source.
-
-          ### Not yet verified
-
-          Real control-point interoperability in this build, Windows 10, ARM64, and a CA-signed
-          certificate. See the repository's docs/testing.md for exactly what was and was not tested.
-
-          ````
-          $sums
-          ````
-          "@
-          # Here-strings keep their indentation; strip the common leading spaces the workflow adds.
-          $notes = ($notes -split "`n" | ForEach-Object { $_.TrimEnd() }) -join "`n"
           [IO.File]::WriteAllText("$(Resolve-Path dist/assets)\RELEASE-NOTES.md", $notes, (New-Object System.Text.UTF8Encoding($false)))
-          Get-Content "dist/assets/RELEASE-NOTES.md" -TotalCount 5
+          Write-Host "release notes: $((Get-Content 'dist/assets/RELEASE-NOTES.md').Count) lines"
 
       - name: Upload release notes
         uses: actions/upload-artifact@v6
