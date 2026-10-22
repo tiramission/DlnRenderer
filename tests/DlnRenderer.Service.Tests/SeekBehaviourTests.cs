@@ -17,7 +17,17 @@ namespace DlnRenderer.Service.Tests;
 [Collection("video-window")]
 public class SeekBehaviourTests : IDisposable
 {
-    private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(30);
+    /// <summary>
+    /// Comfortably longer than the 30 s the session gives its own background reload-and-seek.
+    /// </summary>
+    /// <remarks>
+    /// The deferred seek is applied by <c>KickBackgroundSeek</c>, which caps *itself* at 30 s
+    /// including the wait for the command gate. A test that waits 30 s too is racing that internal
+    /// deadline and can only win when the reload is far faster than the cap - which is why this case
+    /// passed locally and timed out on loaded CI runners. The assertion is "the deferred seek is
+    /// eventually applied", not "within 30 s", so the budget has to sit outside the mechanism's own.
+    /// </remarks>
+    private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(90);
 
     private readonly string _work = Path.Combine(
         Path.GetTempPath(),
@@ -47,18 +57,21 @@ public class SeekBehaviourTests : IDisposable
         await ctx.Session.LoadAsync(new Uri(media), Didl(media), CancellationToken.None);
         await WaitUntil(
             async () => (await ctx.Session.GetStatusAsync(CancellationToken.None)).State == PlaybackState.Paused,
-            "media loaded and paused");
+            "media loaded and paused",
+            ctx.LogPath);
 
         await ctx.Session.PlayAsync(CancellationToken.None);
         await WaitUntil(
             async () => (await ctx.Session.GetStatusAsync(CancellationToken.None)).State == PlaybackState.Playing,
-            "playing");
+            "playing",
+            ctx.LogPath);
 
         await ctx.Session.SeekAsync(TimeSpan.FromSeconds(15), CancellationToken.None);
 
         await WaitUntil(
             async () => (await ctx.Session.GetStatusAsync(CancellationToken.None)).Position.TotalSeconds > 14,
-            "player moved to the seek target");
+            "player moved to the seek target",
+            ctx.LogPath);
     }
 
     [MpvFFmpegFact]
@@ -70,12 +83,14 @@ public class SeekBehaviourTests : IDisposable
         await ctx.Session.LoadAsync(new Uri(media), Didl(media), CancellationToken.None);
         await WaitUntil(
             async () => (await ctx.Session.GetStatusAsync(CancellationToken.None)).State == PlaybackState.Paused,
-            "media loaded and paused");
+            "media loaded and paused",
+            ctx.LogPath);
 
         await ctx.Session.PlayAsync(CancellationToken.None);
         await WaitUntil(
             async () => (await ctx.Session.GetStatusAsync(CancellationToken.None)).State == PlaybackState.Playing,
-            "playing");
+            "playing",
+            ctx.LogPath);
 
         await ctx.Session.StopAsync(CancellationToken.None);
 
@@ -97,7 +112,8 @@ public class SeekBehaviourTests : IDisposable
                 return status.State is PlaybackState.Paused or PlaybackState.Playing
                     && status.Position.TotalSeconds > 10;
             },
-            "reload applied the deferred seek");
+            "reload applied the deferred seek",
+            ctx.LogPath);
     }
 
     [MpvFFmpegFact]
@@ -109,7 +125,8 @@ public class SeekBehaviourTests : IDisposable
         await ctx.Session.LoadAsync(new Uri(media), Didl(media), CancellationToken.None);
         await WaitUntil(
             async () => (await ctx.Session.GetStatusAsync(CancellationToken.None)).State == PlaybackState.Paused,
-            "media loaded and paused");
+            "media loaded and paused",
+            ctx.LogPath);
 
         await ctx.Session.StopAsync(CancellationToken.None);
 
@@ -123,10 +140,19 @@ public class SeekBehaviourTests : IDisposable
                 var status = await ctx.Session.GetStatusAsync(CancellationToken.None);
                 return status.State == PlaybackState.Playing && status.Position.TotalSeconds >= 8.5;
             },
-            "playback resumed at the requested position");
+            "playback resumed at the requested position",
+            ctx.LogPath);
     }
 
-    private static async Task WaitUntil(Func<Task<bool>> condition, string what)
+    /// <summary>
+    /// Polls until the condition holds, and appends the session log when it does not.
+    /// </summary>
+    /// <remarks>
+    /// The session writes its log to a temp file, which is exactly where a CI run cannot see it.
+    /// Without this, a timeout here reports only "it did not happen" - whether the reload was even
+    /// kicked off, or was abandoned by its own deadline, was invisible.
+    /// </remarks>
+    private static async Task WaitUntil(Func<Task<bool>> condition, string what, string? logPath = null)
     {
         var deadline = DateTime.UtcNow + Timeout;
         while (DateTime.UtcNow < deadline)
@@ -139,7 +165,18 @@ public class SeekBehaviourTests : IDisposable
             await Task.Delay(50).ConfigureAwait(false);
         }
 
-        throw new TimeoutException($"timed out waiting for: {what}");
+        throw new TimeoutException($"timed out waiting for: {what}{LogTail(logPath)}");
+    }
+
+    private static string LogTail(string? logPath)
+    {
+        if (logPath is null || !File.Exists(logPath))
+        {
+            return string.Empty;
+        }
+
+        var tail = string.Join(Environment.NewLine, File.ReadAllLines(logPath).TakeLast(40));
+        return $"{Environment.NewLine}---- session log ({logPath}) ----{Environment.NewLine}{tail}";
     }
 
     /// <summary>Short clip generated by ffmpeg; the test is skipped when ffmpeg is missing.</summary>

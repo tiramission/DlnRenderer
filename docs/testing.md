@@ -783,3 +783,71 @@ WinUI/AppSDK 的构建目标会把 R2R 优化带进 `dotnet build`，runner 上�
 ### 12.6 CI 不覆盖
 
 真实控制端投屏、网络中断恢复、8 小时长跑、MSIX 安装、开机启动重启——仍在各阶段的手工清单里。
+
+### 12.7 两个长期 flaky 的根因（2026-10-23）
+
+2026-10-22 晚间有三个 CI run 失败，报的是**同样两个**测试、同样两种 `TimeoutException`，
+而夹在中间的运行全是绿的：
+
+| run | 提交 | 结果 | 失败 |
+| --- | --- | --- | --- |
+| `39815582730` | `e21401f` | 失败 | Volume |
+| `39818191940` | `5db31de` | 失败 | Volume + Seek |
+| `39825454485` | `1ab7016` | 失败 | Volume + Seek |
+
+失败的三个提交彼此毫无共同点（一个是投屏窗口改动，一个是纯版本号与文档模板），首次失败又早于
+当晚所有相关改动——**所以这不是"谁改坏了"，是测试与被测代码各自的问题**。下面两条都不是放宽
+超时了事：一条是断言写错了对象，另一条是真实缺陷。
+
+#### Volume：断言了合并机制不保证的东西
+
+`Unsubscribing_while_publishing_does_not_fail_the_publish` 断言"存活的订阅者收到 **2 条**通知"，
+但 `GenaNotifier.DeliveryPump` **按设计会合并**：`Enqueue` 只覆盖 `_pending`，注释写得很清楚——
+"被取代的状态直接替换"。50 次更新因此可以合法地只产生一条投递，发出几条取决于泵恰好跑多快。
+
+真正有保证的是**最后一次写入的值**：最后一次入队一定会重启泵，而泵的退出判定与 `_pending` 由
+同一把锁守护，两种交错顺序都保证它会被发出（见 [`architecture.md`](architecture.md) §14.5）。
+断言因此改为"等存活订阅者收到最新值"，而不是数条数。
+
+同时把"移除哪一个订阅者"从 `Registry.ForService(...).First()` 改成**用订阅时返回的 SID 显式
+移除**：字典的枚举顺序不是契约，"第一个"不等于"先订阅的那个"，而一旦挑错，被断言的那个订阅者
+就是被移除的那个。
+
+#### Seek：延后进度条丢失（真实缺陷，不是测试问题）
+
+`Seek_after_stop_returns_at_once_and_is_applied_by_the_reload` 在 CI 上超时、在本地**稳定失败**。
+补上日志输出后一眼看全：
+
+```text
+seek deferred until the media is reloaded: 12.0s
+player status Buffering kind=Unknown pos=0.1
+player command seek applied
+background seek abandoned: mpv command 'seek' failed (-12)
+```
+
+后台任务**没有重载**（缺 `reloading media to honour a seek`），直接 seek，然后失败。原因是两条
+重载判定不一致：
+
+```csharp
+// Play：三个条件
+status.Media is null || State is Stopped/Error || _needsReload
+
+// 延后 seek（修复前）：漏了 _needsReload
+status.Media is null || State is Stopped/Error
+```
+
+`Stop` 之后播放器拆文件时**短暂报 `Buffering`**，媒体信息又还没清掉，于是后台任务据此判定
+"媒体还在"，跳过重载，一头撞上 mpv 的 `-12`。控制点早就收到成功应答了，位置就这么丢了——
+用户侧的表现是：播完或停止后拖进度条，进度条动了但播放位置没变。
+
+CI 上有时候能过，只是因为状态偶尔先走到 `Stopped`。修法是补上 `_needsReload` 并在重载后清掉它，
+与 `Play` 路径一致。
+
+**验证**：同一个测试从"每轮 93 秒、1 个失败（等一个已经 abandoned 的任务）"变成
+"每轮 3 秒、8/8 通过"，连跑 3 轮稳定。
+
+#### 顺带补上的诊断能力
+
+`VolumeStateConsistencyTests` 自己的 `SessionContext` 把会话日志丢给了 `_ => { }`，所以它在 CI 上
+失败时**没有任何内部记录**可看。现在两个测试的日志都落盘，并在超时时把最后 40 行附进异常消息——
+上面那段 Seek 的日志就是这么来的。没有它，这次的失败仍然只能报"它没发生"。

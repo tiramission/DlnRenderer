@@ -370,9 +370,11 @@ public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsy
     private async Task ApplyPendingSeekCoreAsync(CancellationToken cancellationToken)
     {
         TimeSpan? target;
+        bool needsReload;
         lock (_stateGate)
         {
             target = _pendingSeek;
+            needsReload = _needsReload;
         }
 
         if (target is null)
@@ -381,10 +383,21 @@ public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsy
         }
 
         var status = await _player.GetStatusAsync(cancellationToken).ConfigureAwait(false);
-        if (status.Media is null || status.State is PlaybackState.Stopped or PlaybackState.Error)
+
+        // The same three conditions Play uses, and _needsReload is the one that matters here: right
+        // after Stop the player still reports Buffering while it tears the previous file down, so the
+        // status alone reads as "the medium is loaded" when it is not. Seeking into that state is
+        // what failed with mpv error -12 and left the deferred seek abandoned - the control point had
+        // already been answered, so the position was simply lost.
+        if (needsReload || status.Media is null || status.State is PlaybackState.Stopped or PlaybackState.Error)
         {
             _log("reloading media to honour a seek");
             await ReloadCurrentAsync(cancellationToken).ConfigureAwait(false);
+
+            lock (_stateGate)
+            {
+                _needsReload = false;
+            }
         }
 
         lock (_stateGate)

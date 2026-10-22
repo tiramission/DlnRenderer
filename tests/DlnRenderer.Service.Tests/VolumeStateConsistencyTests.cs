@@ -45,7 +45,10 @@ public class VolumeStateConsistencyTests
         var player = (await ctx.Player.GetStatusAsync(CancellationToken.None)).Volume;
         Assert.Equal(values[^1], player);
 
-        await WaitUntil(() => ctx.Session.GetSnapshot().Playback.Volume == player, "snapshot matches the player");
+        await WaitUntil(
+            () => ctx.Session.GetSnapshot().Playback.Volume == player,
+            "snapshot matches the player",
+            ctx.LogPath);
         Assert.Equal(player, ctx.Session.GetSnapshot().Playback.Volume);
     }
 
@@ -56,7 +59,7 @@ public class VolumeStateConsistencyTests
         await using var first = CallbackServer.Start();
         await using var second = CallbackServer.Start();
 
-        await SubscribeAsync(ctx, first);
+        var firstSid = await SubscribeAsync(ctx, first);
         await SubscribeAsync(ctx, second);
 
         // Remove one subscriber while the other keeps the fan-out running.
@@ -68,13 +71,23 @@ public class VolumeStateConsistencyTests
             }
         });
 
-        var unsubscribe = Task.Run(() => ctx.DeviceHost.Eventing.Registry.TryRemove(
-            ctx.DeviceHost.Eventing.Registry.ForService(GenaServiceKind.RenderingControl).First().Sid));
+        var unsubscribe = Task.Run(() => ctx.DeviceHost.Eventing.Registry.TryRemove(firstSid));
 
         await Task.WhenAll(publish, unsubscribe);
 
-        // The surviving subscriber still receives events: removal cannot poison the fan-out.
-        await second.WaitForAsync(2, Timeout);
+        // The surviving subscriber still reaches the newest state: removal cannot poison the
+        // fan-out.
+        //
+        // Asserting on a *count* would test something the pump never promised. It coalesces by
+        // design - a state superseded before it is sent is replaced - so 50 updates can legitimately
+        // arrive as a single notification, and whether they do depends on how fast the pump happens
+        // to run. What is guaranteed is the last state written: the final enqueue always restarts
+        // the pump, and the pump's exit and the pending slot are guarded by the same lock.
+        var newest = await second.WaitForAsync(
+            n => n.Body.Contains("49", StringComparison.Ordinal),
+            Timeout);
+
+        Assert.Contains("49", newest.Body, StringComparison.Ordinal);
     }
 
     [MpvFact]
@@ -83,7 +96,7 @@ public class VolumeStateConsistencyTests
         await using var ctx = await SessionContext.CreateAsync();
 
         await ctx.Player.SetMuteAsync(true, CancellationToken.None);
-        await WaitUntil(() => ctx.Session.GetSnapshot().Playback.Muted, "snapshot sees mute");
+        await WaitUntil(() => ctx.Session.GetSnapshot().Playback.Muted, "snapshot sees mute", ctx.LogPath);
 
         var soapMute = await ctx.SoapGetAsync("GetMute", "<InstanceID>0</InstanceID><Channel>Master</Channel>");
 
@@ -129,7 +142,13 @@ public class VolumeStateConsistencyTests
 
     // ---- helpers ---------------------------------------------------------------------------
 
-    private static async Task SubscribeAsync(SessionContext ctx, CallbackServer callback)
+    /// <summary>Subscribes and returns the new subscription's SID.</summary>
+    /// <remarks>
+    /// Callers that need to remove a specific subscription must use this instead of picking one out
+    /// of the registry: the registry's enumeration order is whatever the backing dictionary does,
+    /// which is not a contract, so "the first one" is not reliably "the one added first".
+    /// </remarks>
+    private static async Task<string> SubscribeAsync(SessionContext ctx, CallbackServer callback)
     {
         var request = new DlnRenderer.Dlna.Http.DlnHttpRequest(
             "SUBSCRIBE",
@@ -147,9 +166,12 @@ public class VolumeStateConsistencyTests
             GenaServiceKind.RenderingControl, request, CancellationToken.None);
 
         Assert.Equal(200, response.StatusCode);
+
+        return response.Headers?["SID"]
+            ?? throw new InvalidOperationException("SUBSCRIBE did not return a SID.");
     }
 
-    private static async Task WaitUntil(Func<bool> condition, string what)
+    private static async Task WaitUntil(Func<bool> condition, string what, string? logPath = null)
     {
         var deadline = DateTime.UtcNow + Timeout;
         while (DateTime.UtcNow < deadline)
@@ -162,7 +184,14 @@ public class VolumeStateConsistencyTests
             await Task.Delay(25).ConfigureAwait(false);
         }
 
-        throw new TimeoutException($"timed out waiting for: {what}");
+        // The log is what says whether the state ever moved; without it a timeout here only reports
+        // that it did not.
+        var tail = logPath is not null && File.Exists(logPath)
+            ? $"{Environment.NewLine}---- session log ({logPath}) ----{Environment.NewLine}"
+              + string.Join(Environment.NewLine, File.ReadAllLines(logPath).TakeLast(40))
+            : string.Empty;
+
+        throw new TimeoutException($"timed out waiting for: {what}{tail}");
     }
 
     private sealed class SessionContext : IAsyncDisposable
@@ -170,13 +199,20 @@ public class VolumeStateConsistencyTests
         private readonly MpvPlayer _player;
         private readonly VideoPresenter _presenter;
 
-        private SessionContext(MpvPlayer player, VideoPresenter presenter, RendererSession session, DlnaDeviceHost host)
+        private SessionContext(MpvPlayer player, VideoPresenter presenter, RendererSession session, DlnaDeviceHost host, string logPath)
         {
             _player = player;
             _presenter = presenter;
             Session = session;
             DeviceHost = host;
+            LogPath = logPath;
         }
+
+        /// <summary>
+        /// Where this context's diagnostics go. The service's own log messages are the only way to
+        /// see what GENA decided to do, so dropping them made a failure here unexplainable.
+        /// </summary>
+        public string LogPath { get; }
 
         public MpvPlayer Player => _player;
 
@@ -200,14 +236,29 @@ public class VolumeStateConsistencyTests
                 Eventing = new GenaOptions { AllowLoopbackCallbacks = true },
             };
 
-            var session = new RendererSession(player, presenter, options, _ => { });
-            var host = new DlnaDeviceHost(options, session, _ => { });
+            var logPath = Path.Combine(
+                Path.GetTempPath(),
+                "dlnrenderer-session-tests",
+                $"session-{Guid.NewGuid():N}.log");
+            Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
+            var gate = new object();
+
+            void Write(string message)
+            {
+                lock (gate)
+                {
+                    File.AppendAllText(logPath, $"{DateTime.Now:HH:mm:ss.fff} {message}{Environment.NewLine}");
+                }
+            }
+
+            var session = new RendererSession(player, presenter, options, Write);
+            var host = new DlnaDeviceHost(options, session, Write);
 
             session.RenderingEventRaised += (volume, muted) => host.Eventing.UpdateRenderingControl(volume, muted);
             session.TransportEventRaised += status => host.Eventing.UpdateAvTransport(status.State, status.ErrorMessage, status.Duration);
 
             host.Start();
-            return new SessionContext(player, presenter, session, host);
+            return new SessionContext(player, presenter, session, host, logPath);
         }
 
         public async Task<string> SoapGetAsync(string action, string arguments)
