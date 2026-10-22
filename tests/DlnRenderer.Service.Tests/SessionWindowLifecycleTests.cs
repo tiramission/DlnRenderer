@@ -286,64 +286,6 @@ public class SessionWindowLifecycleTests : IDisposable
             </DIDL-Lite>
             """;
 
-    private sealed class SessionContext : IAsyncDisposable
-    {
-        private readonly MpvPlayer _player;
-
-        private SessionContext(MpvPlayer player, VideoPresenter presenter, RendererSession session)
-        {
-            _player = player;
-            Presenter = presenter;
-            Session = session;
-        }
-
-        public VideoPresenter Presenter { get; }
-
-        public RendererSession Session { get; }
-
-        public static async Task<SessionContext> CreateAsync()
-        {
-            var presenter = await VideoPresenter.StartAsync();
-            var logPath = Path.Combine(Path.GetTempPath(), "session-window-tests.log");
-            var gate = new object();
-
-            var player = new MpvPlayer(new MpvPlayerOptions
-            {
-                VideoWindowHandle = presenter.ChildHandle,
-                AudioOutput = "null",
-                LogLevel = "info",
-            });
-
-            player.LogMessage += (_, message) =>
-            {
-                lock (gate)
-                {
-                    File.AppendAllText(logPath, $"{DateTime.Now:HH:mm:ss.fff} mpv {message.Level}: {message.Text.Trim()}{Environment.NewLine}");
-                }
-            };
-
-            var session = new RendererSession(
-                player,
-                presenter,
-                new DlnaOptions(),
-                message =>
-                {
-                    lock (gate)
-                    {
-                        File.AppendAllText(logPath, $"{DateTime.Now:HH:mm:ss.fff} {message}{Environment.NewLine}");
-                    }
-                });
-            return new SessionContext(player, presenter, session);
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            await Session.DisposeAsync();
-            await _player.DisposeAsync();
-            await Presenter.DisposeAsync();
-        }
-    }
-
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool IsWindow(nint hwnd);

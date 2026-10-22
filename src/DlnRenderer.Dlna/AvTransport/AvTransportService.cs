@@ -220,9 +220,9 @@ public sealed class AvTransportService(ITransportRenderer renderer, Action<strin
         }
 
         var target = request.Argument("Target");
-        if (!TryParseTime(target, out var position))
+        if (!TryParseSeekTarget(target, out var position))
         {
-            throw new UpnpException(UpnpErrorCode.ArgumentValueInvalid, "Target must be H+:MM:SS");
+            throw new UpnpException(UpnpErrorCode.ArgumentValueInvalid, "Target must be H+:MM:SS or a number of seconds");
         }
 
         if (renderer.CurrentUri is null)
@@ -244,13 +244,59 @@ public sealed class AvTransportService(ITransportRenderer renderer, Action<strin
 
         try
         {
-            await InvokeRendererAsync(() => renderer.SeekAsync(position, cancellationToken), "Seek")
-                .ConfigureAwait(false);
+            await renderer.SeekAsync(position, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (ArgumentOutOfRangeException)
         {
             throw new UpnpException(UpnpErrorCode.ArgumentValueOutOfRange, "Target is not a valid position");
         }
+        catch (Exception ex)
+        {
+            // A player that refuses the seek is not a protocol error: the control point's slider has
+            // already moved, and answering a fault makes it snap back and disable seeking. The
+            // renderer's own position is what GetPositionInfo reports, so the truth is still visible.
+            log($"Seek to {target} was not applied by the player: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Parses a <c>Seek</c> target, accepting both the protocol's <c>H+:MM:SS</c> form and a bare
+    /// number of seconds.
+    /// </summary>
+    /// <remarks>
+    /// The bare-seconds form is not in the specification, but clients that compute an offset rather
+    /// than formatting a timestamp send it, and mpv accepts it too - so refusing it only loses those
+    /// clients' progress control.
+    /// </remarks>
+    internal static bool TryParseSeekTarget(string? text, out TimeSpan position)
+    {
+        if (TryParseTime(text, out position))
+        {
+            return true;
+        }
+
+        position = default;
+        if (string.IsNullOrWhiteSpace(text) || text.Contains(':'))
+        {
+            return false;
+        }
+
+        if (!double.TryParse(
+                text.Trim(),
+                NumberStyles.AllowDecimalPoint,
+                CultureInfo.InvariantCulture,
+                out var seconds)
+            || seconds < 0)
+        {
+            return false;
+        }
+
+        position = TimeSpan.FromSeconds(seconds);
+        return true;
     }
 
     private async Task<string> GetTransportInfoAsync(SoapRequest request, CancellationToken cancellationToken)

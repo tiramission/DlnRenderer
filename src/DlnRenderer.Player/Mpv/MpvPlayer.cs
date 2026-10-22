@@ -42,6 +42,17 @@ public sealed class MpvPlayer : IMediaPlayer
     private bool _coreIdle;
     private bool _hasVideo;
     private bool _hasAudio;
+
+    /// <summary>
+    /// Pause state this renderer asked for, which is not the same as the player's own flag.
+    /// </summary>
+    /// <remarks>
+    /// libmpv resets <c>pause</c> when a file is loaded, so a load issued as "open paused" ends up
+    /// playing from the first frame. That is exactly what <c>SetAVTransportURI</c> must not do, and
+    /// it left reloads stuck in buffering. The intent is therefore remembered here and re-applied
+    /// once the file is actually loaded.
+    /// </remarks>
+    private bool _desiredPause = true;
     private double _position;
     private double _duration;
     /// <summary>Volume as raw bits, so the event thread and readers never tear a double.</summary>
@@ -161,6 +172,10 @@ public sealed class MpvPlayer : IMediaPlayer
             _title = media.Title;
             // Until mpv reports FILE_LOADED, idle-active still describes the previous state.
             _loadPending = true;
+
+            // Loading must leave the player paused, which mpv does not guarantee on its own (see
+            // _desiredPause): the intent is re-applied from the FILE_LOADED handler.
+            _desiredPause = true;
         }
 
         // Mark the load as in progress *before* issuing loadfile. mpv emits FILE_LOADED from its own
@@ -221,12 +236,24 @@ public sealed class MpvPlayer : IMediaPlayer
     public Task PlayAsync(CancellationToken cancellationToken)
     {
         var context = RequireContext();
+        lock (_gate)
+        {
+            // A Play that races the load must win: re-applying the load's pause intent on FILE_LOADED
+            // would otherwise stop the playback the control point just started.
+            _desiredPause = false;
+        }
+
         return RunCommandAsync("pause", cancellationToken, () => MpvNative.SetFlag(context, "pause", false));
     }
 
     public Task PauseAsync(CancellationToken cancellationToken)
     {
         var context = RequireContext();
+        lock (_gate)
+        {
+            _desiredPause = true;
+        }
+
         return RunCommandAsync("pause", cancellationToken, () => MpvNative.SetFlag(context, "pause", true));
     }
 
@@ -488,6 +515,7 @@ public sealed class MpvPlayer : IMediaPlayer
                     // FILE_LOADED is the definitive "this file is loaded now" event, and leaving the
                     // flag set would keep the status at Transitioning forever when a Stop raced the
                     // load and its events were therefore not observed.
+                    bool reapplyPause;
                     lock (_gate)
                     {
                         _idleActive = false;
@@ -498,6 +526,26 @@ public sealed class MpvPlayer : IMediaPlayer
                         // medium that a Stop just terminated can be recognised and ignored.
                         var position = MpvNative.GetString(context, "playlist-pos");
                         _loadedEntryId = int.TryParse(position, out var loadedId) ? loadedId : 0;
+
+                        // A load that did not start from a Play must stay paused (mpv resets the flag
+                        // while opening the file). Without this the renderer sits in buffering, never
+                        // playing and never paused, and every caller that waits for it times out.
+                        reapplyPause = _desiredPause && !_paused;
+                    }
+
+                    if (reapplyPause && MpvNative.SetFlag(context, "pause", true) >= 0)
+                    {
+                        // Record it immediately: the property-change event that confirms it arrives a
+                        // moment later, and publishing the intermediate buffering state in between
+                        // makes every control point see a flicker it never asked for.
+                        lock (_gate)
+                        {
+                            _paused = true;
+                        }
+                    }
+                    else if (reapplyPause)
+                    {
+                        Log("warning", "could not re-apply the paused state after loading");
                     }
 
                     RefreshTrackPresence(context);

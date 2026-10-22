@@ -31,6 +31,21 @@ public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsy
     private bool _needsReload;
     private bool _disposed;
 
+    /// <summary>
+    /// Position a control point asked for while no medium was loaded, to be applied once one is.
+    /// </summary>
+    /// <remarks>
+    /// Seeking is a progress-bar drag: the client expects the position to move, not to wait. When the
+    /// medium has ended or been discarded, honouring the seek needs a reload, which can take as long
+    /// as the network does. Blocking the request on that made the slider appear dead, so the target
+    /// is remembered here and applied by the reload that follows - from this renderer's background
+    /// task, or from the next Play.
+    /// </remarks>
+    private TimeSpan? _pendingSeek;
+
+    /// <summary>1 while a background reload-and-seek is in flight; guards against a pile-up.</summary>
+    private int _backgroundSeekRunning;
+
     public RendererSession(MpvPlayer player, VideoPresenter? presenter, DlnaOptions options, Action<string> log)
     {
         _player = player;
@@ -143,6 +158,9 @@ public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsy
                 _playbackStarted = false;
                 _stopBarrier = false;
                 _needsReload = false;
+
+                // A position remembered for the previous item means nothing for this one.
+                _pendingSeek = null;
             }
 
             try
@@ -207,6 +225,10 @@ public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsy
                 _needsReload = false;
             }
 
+            // A seek requested while the medium was unloaded takes effect here, before playback
+            // starts, so the first frame is the one the control point asked for.
+            await ApplyPendingSeekCoreAsync(cancellationToken).ConfigureAwait(false);
+
             await _player.PlayAsync(cancellationToken).ConfigureAwait(false);
         }, cancellationToken).ConfigureAwait(false);
     }
@@ -246,14 +268,121 @@ public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsy
         return ExecuteAsync("seek", async () =>
         {
             var status = await _player.GetStatusAsync(cancellationToken).ConfigureAwait(false);
-            if (status.Media is null || status.State == PlaybackState.Stopped)
+
+            // Fast path: the medium is loaded, so the player can move within it right now.
+            if (status.Media is not null && status.State is not (PlaybackState.Stopped or PlaybackState.Error))
             {
-                _log("reloading media before seek");
-                await ReloadCurrentAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await _player.SeekAsync(position, cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+                catch (MpvCommandException ex)
+                {
+                    // Stop can land between the status read above and this command, which leaves the
+                    // player idle and unwilling to seek. Fall through to the deferred path rather
+                    // than surfacing a failure the control point cannot act on.
+                    _log($"seek refused by the player ({ex.Message}); deferring");
+                }
             }
 
-            await _player.SeekAsync(position, cancellationToken).ConfigureAwait(false);
+            // The medium ended, was discarded, or the player refused the seek. Recording the target
+            // and reloading in the background keeps the request instantaneous: a control point that
+            // waits ~15 s for a reload gives up on the progress bar, and every drag step would queue
+            // another one.
+            lock (_stateGate)
+            {
+                _pendingSeek = position;
+            }
+
+            _log($"seek deferred until the media is reloaded: {position.TotalSeconds:F1}s");
+            KickBackgroundSeek();
         }, cancellationToken);
+    }
+
+    /// <summary>
+    /// Applies a seek that was deferred because no medium was loaded.
+    /// </summary>
+    /// <remarks>
+    /// The caller must already hold the command gate. The target is cleared only after the player
+    /// accepted it, so a reload that times out leaves it in place for the next Play to apply.
+    /// </remarks>
+    private async Task ApplyPendingSeekCoreAsync(CancellationToken cancellationToken)
+    {
+        TimeSpan? target;
+        lock (_stateGate)
+        {
+            target = _pendingSeek;
+        }
+
+        if (target is null)
+        {
+            return;
+        }
+
+        var status = await _player.GetStatusAsync(cancellationToken).ConfigureAwait(false);
+        if (status.Media is null || status.State is PlaybackState.Stopped or PlaybackState.Error)
+        {
+            _log("reloading media to honour a seek");
+            await ReloadCurrentAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        lock (_stateGate)
+        {
+            // Another seek may have landed while the reload ran; the newest target wins.
+            target = _pendingSeek;
+            _pendingSeek = null;
+        }
+
+        if (target is null)
+        {
+            return;
+        }
+
+        await _player.SeekAsync(target.Value, cancellationToken).ConfigureAwait(false);
+        _log($"seek applied after reload: {target.Value.TotalSeconds:F1}s");
+    }
+
+    /// <summary>
+    /// Runs the deferred seek on the thread pool, at most once at a time.
+    /// </summary>
+    /// <remarks>
+    /// Nothing awaits this: the control point was already answered. A second seek while the first
+    /// reload is still running only updates the target - the running task applies the newest value.
+    /// </remarks>
+    private void KickBackgroundSeek()
+    {
+        if (Interlocked.CompareExchange(ref _backgroundSeekRunning, 1, 0) != 0)
+        {
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                // A network load that never completes must not pin this task for the process lifetime.
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                await _commandGate.WaitAsync(timeout.Token).ConfigureAwait(false);
+                try
+                {
+                    await ApplyPendingSeekCoreAsync(timeout.Token).ConfigureAwait(false);
+                }
+                finally
+                {
+                    _commandGate.Release();
+                }
+            }
+            catch (Exception ex)
+            {
+                // The target stays pending: the next Play reloads and applies it.
+                _log($"background seek abandoned: {ex.Message}");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _backgroundSeekRunning, 0);
+            }
+        });
     }
 
     /// <summary>
@@ -373,7 +502,12 @@ public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsy
             while (DateTime.UtcNow < deadline)
             {
                 var status = await _player.GetStatusAsync(cancellationToken).ConfigureAwait(false);
-                if (status.State is PlaybackState.Paused or PlaybackState.Playing or PlaybackState.Error)
+
+                // Buffering counts as settled: the file is open and the player has reported it, which
+                // is all this wait exists to establish. A stream that is still filling its cache must
+                // not be mistaken for a failed load, and a Play immediately after will start it.
+                if (status.State is PlaybackState.Paused or PlaybackState.Playing
+                    or PlaybackState.Buffering or PlaybackState.Error)
                 {
                     return;
                 }
@@ -427,12 +561,12 @@ public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsy
             }
 
             // After Stop, queued events describing the stopped medium arrive as Playing and must not
-            // restart the presentation. Only playback events are filtered: a reload issues
-            // Transitioning, Paused and Error, and swallowing those would leave the reload wait
-            // observing a state that never advances.
+            // restart the presentation. Only Play is filtered, for exactly that reason: a reload
+            // issues Transitioning, Buffering, Paused and Error, and swallowing those leaves every
+            // caller waiting on the reload observing a state that never advances.
             if (_stopBarrier
                 && !_playbackStarted
-                && status.State is PlaybackState.Playing or PlaybackState.Paused or PlaybackState.Buffering)
+                && status.State is PlaybackState.Playing)
             {
                 return;
             }
