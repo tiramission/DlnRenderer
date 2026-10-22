@@ -34,6 +34,13 @@ public sealed class CallbackServer : IAsyncDisposable
     /// <summary>When set, the callback accepts the connection and then never answers.</summary>
     public bool HangRequests { get; set; }
 
+    /// <summary>
+    /// Delay before answering each notification, simulating a phone whose callback handler is busy.
+    /// A slow subscriber is what exposes out-of-order SEQ numbers: with concurrent delivery the next
+    /// state is already on the wire while the previous answer is still pending.
+    /// </summary>
+    public TimeSpan ResponseDelay { get; set; } = TimeSpan.Zero;
+
     public int Port { get; }
 
     public Uri CallbackUri => new($"http://127.0.0.1:{Port}/notify");
@@ -136,6 +143,11 @@ public sealed class CallbackServer : IAsyncDisposable
                     // Accept and stay silent: the renderer must time out rather than wait forever.
                     await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken).ConfigureAwait(false);
                     return;
+                }
+
+                if (ResponseDelay > TimeSpan.Zero)
+                {
+                    await Task.Delay(ResponseDelay, cancellationToken).ConfigureAwait(false);
                 }
 
                 var body = Encoding.ASCII.GetBytes("ok");

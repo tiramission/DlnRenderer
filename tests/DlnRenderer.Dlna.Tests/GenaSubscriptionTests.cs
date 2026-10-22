@@ -246,30 +246,40 @@ public sealed class GenaSubscriptionTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Initial_event_carries_the_media_uri_and_metadata()
+    public async Task Initial_event_carries_the_transport_state_and_track_counts()
     {
-        // A control point that subscribes mid-playback learns the track from the initial event, not
-        // from the action that started it, so both URI variables and both metadata variables matter.
+        // A control point that subscribes mid-playback learns what is loaded from the initial event,
+        // not from the action that started it: the state, the track count and the duration are what
+        // its remote UI draws before the first GetPositionInfo poll.
         var uri = new Uri("http://192.168.1.9:18777/movie.mp4");
         const string didl = "<DIDL-Lite xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\">"
             + "<item id=\"1\"><dc:title xmlns:dc=\"http://purl.org/dc/elements/1.1/\">Movie</dc:title></item>"
             + "</DIDL-Lite>";
         await _renderer.LoadAsync(uri, didl, CancellationToken.None);
+        _renderer.State = PlaybackState.Playing;
+        _renderer.Duration = TimeSpan.FromSeconds(90);
 
         await using var callback = CallbackServer.Start();
         await SubscribeAsync(callback);
         var first = (await callback.WaitForAsync(1, Timeout))[0];
 
-        var inner = XDocument.Parse(XDocument.Parse(first.Body).Root!
-            .Descendants().Single(e => e.Name.LocalName == "LastChange").Value);
+        var lastChangeXml = XDocument.Parse(first.Body).Root!
+            .Descendants().Single(e => e.Name.LocalName == "LastChange").Value;
+        var inner = XDocument.Parse(lastChangeXml);
 
         string Value(string name)
             => inner.Descendants().Single(e => e.Name.LocalName == name).Attribute("val")!.Value;
 
-        Assert.Equal(uri.AbsoluteUri, Value("AVTransportURI"));
-        Assert.Equal(didl, Value("AVTransportURIMetaData"));
-        Assert.Equal(uri.AbsoluteUri, Value("CurrentTrackURI"));
-        Assert.Equal(didl, Value("CurrentTrackMetaData"));
+        Assert.Equal("PLAYING", Value("TransportState"));
+        Assert.Equal("OK", Value("TransportStatus"));
+        Assert.Equal("1", Value("CurrentTrack"));
+        Assert.Equal("1", Value("NumberOfTracks"));
+        Assert.Equal("00:01:30", Value("CurrentTrackDuration"));
+
+        // The variables are unprefixed inside the escaped Event document: a client that reads them
+        // by tag name (rather than by namespace-resolved name) then finds them.
+        Assert.Contains("<TransportState val=\"PLAYING\"", lastChangeXml, StringComparison.Ordinal);
+        Assert.DoesNotContain("<m:", lastChangeXml, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -434,8 +444,86 @@ public sealed class GenaSubscriptionTests : IAsyncLifetime
             .Single(e => e.Name.LocalName == "TransportStatus").Attribute("val")!.Value);
 
         // The inner document is escaped exactly once: a double escape would show up as &amp;lt;.
-        Assert.Contains("&lt;m:Event", notify.Body, StringComparison.Ordinal);
+        // The Event element is written without a namespace prefix, which is what clients that read
+        // the variables by tag name require.
+        Assert.Contains("&lt;Event", notify.Body, StringComparison.Ordinal);
+        Assert.DoesNotContain("&lt;m:Event", notify.Body, StringComparison.Ordinal);
         Assert.DoesNotContain("&amp;lt;", notify.Body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Notifications_keep_their_sequence_order_for_a_slow_subscriber()
+    {
+        // GENA numbers events per subscriber and clients order them by SEQ. Delivering concurrently
+        // is what broke this in the field: a phone whose callback answered slowly received SEQ 5
+        // before SEQ 3, discarded the events, and left its casting UI stuck on "connecting" while
+        // the media was already playing.
+        await using var callback = CallbackServer.Start();
+        callback.ResponseDelay = TimeSpan.FromMilliseconds(60);
+
+        await SubscribeAsync(callback);
+        await callback.WaitForAsync(1, Timeout);
+
+        for (var i = 0; i < 8; i++)
+        {
+            _host.Eventing.UpdateAvTransport(
+                i % 2 == 0 ? PlaybackState.Playing : PlaybackState.Paused,
+                null,
+                TimeSpan.FromSeconds(60 + i));
+            await Task.Delay(40);
+        }
+
+        // Wait until the burst settled: a few states are legitimately coalesced, so the count is not
+        // fixed - what matters is the order of the ones that were sent.
+        var deadline = DateTime.UtcNow + Timeout;
+        var lastCount = -1;
+        var stableSince = DateTime.UtcNow;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (callback.Count != lastCount)
+            {
+                lastCount = callback.Count;
+                stableSince = DateTime.UtcNow;
+            }
+            else if (lastCount >= 3 && DateTime.UtcNow - stableSince > TimeSpan.FromMilliseconds(400))
+            {
+                break;
+            }
+
+            await Task.Delay(50);
+        }
+
+        var sequences = callback.Received
+            .Select(n => int.Parse(n.Sequence!, System.Globalization.CultureInfo.InvariantCulture))
+            .ToArray();
+
+        Assert.True(sequences.Length >= 2, $"expected several notifications, got {sequences.Length}");
+        Assert.Equal(0, sequences[0]);
+
+        for (var i = 1; i < sequences.Length; i++)
+        {
+            Assert.True(
+                sequences[i] > sequences[i - 1],
+                $"SEQ must increase per subscriber; received [{string.Join(", ", sequences)}]");
+        }
+    }
+
+    [Fact]
+    public async Task Initial_event_arrives_after_the_subscribe_response_and_uses_seq_0()
+    {
+        // A control point that receives the first NOTIFY before it has processed the 200 OK that
+        // carries its SID answers 412 and throws the subscription away - which is exactly the
+        // "notify failed (HTTP 412)" seen against a real phone.
+        await using var callback = CallbackServer.Start();
+
+        var response = await SubscribeAsync(callback);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.True(response.Headers.TryGetValues("SID", out var sids));
+
+        var first = (await callback.WaitForAsync(1, Timeout))[0];
+        Assert.Equal(sids!.Single(), first.Sid);
+        Assert.Equal("0", first.Sequence);
     }
 
     // ---- failure handling and isolation -----------------------------------------------------

@@ -67,10 +67,7 @@ public class RenderingControlIntegrationTests
         await using var ctx = await SessionContext.CreateAsync();
         await using var callback = CallbackServer.Start();
 
-        var subscribe = await ctx.DeviceHost.Eventing.SubscribeAsync(
-            GenaServiceKind.RenderingControl,
-            SubscribeRequest(callback),
-            CancellationToken.None);
+        var subscribe = await SubscribeAsync(ctx, callback);
         Assert.Equal(200, subscribe.StatusCode);
 
         await callback.WaitForAsync(1, Timeout);
@@ -161,10 +158,7 @@ public class RenderingControlIntegrationTests
         await using var ctx = await SessionContext.CreateAsync();
         await using var callback = CallbackServer.Start();
 
-        var subscribe = await ctx.DeviceHost.Eventing.SubscribeAsync(
-            GenaServiceKind.RenderingControl,
-            SubscribeRequest(callback),
-            CancellationToken.None);
+        var subscribe = await SubscribeAsync(ctx, callback);
         Assert.Equal(200, subscribe.StatusCode);
 
         await callback.WaitForAsync(1, Timeout);
@@ -194,10 +188,7 @@ public class RenderingControlIntegrationTests
         await using var ctx = await SessionContext.CreateAsync();
         await using var callback = CallbackServer.Start();
 
-        await ctx.DeviceHost.Eventing.SubscribeAsync(
-            GenaServiceKind.RenderingControl,
-            SubscribeRequest(callback),
-            CancellationToken.None);
+        await SubscribeAsync(ctx, callback);
 
         await callback.WaitForAsync(1, Timeout);
 
@@ -215,6 +206,22 @@ public class RenderingControlIntegrationTests
     }
 
     // ---- helpers ---------------------------------------------------------------------------
+
+    /// <summary>
+    /// Subscribes and triggers the initial event, which a real client only receives once the
+    /// <c>200 OK</c> carrying its SID has been flushed. The HTTP server does that through the
+    /// response's after-send hook; a test calling the eventing service directly must run it itself.
+    /// </summary>
+    private static async Task<DlnRenderer.Dlna.Http.DlnHttpResponse> SubscribeAsync(SessionContext ctx, CallbackServer callback)
+    {
+        var response = await ctx.DeviceHost.Eventing.SubscribeAsync(
+            GenaServiceKind.RenderingControl,
+            SubscribeRequest(callback),
+            CancellationToken.None);
+
+        response.AfterSend?.Invoke();
+        return response;
+    }
 
 
     private static DlnRenderer.Dlna.Http.DlnHttpRequest SubscribeRequest(CallbackServer callback)

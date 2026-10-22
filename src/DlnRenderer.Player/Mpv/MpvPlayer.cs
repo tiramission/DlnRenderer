@@ -378,6 +378,12 @@ public sealed class MpvPlayer : IMediaPlayer
         SetOption(context, "idle", "yes");
         SetOption(context, "keep-open", "no");
 
+        // Stills must stay on screen until the control point replaces them. mpv's default is one
+        // second, after which a cast of a photo (Douyin and several galleries push a .jpg per slide)
+        // ends on its own: the phone sees the transport fall back to idle immediately after Play and
+        // reports the cast as failed. The reference renderer pins the duration to infinity.
+        SetOption(context, "image-display-duration", "inf");
+
         // Window state belongs to the host (VideoPresenter), which owns the HWND and the message
         // loop. Letting mpv also manage fullscreen/topmost makes two systems fight over the same
         // window geometry and focus on every resize. Pinned off so a future mpv default cannot

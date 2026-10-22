@@ -13,6 +13,15 @@ public sealed record DlnHttpRequest(
 
 public sealed record DlnHttpResponse(int StatusCode, string ContentType, string Body, IReadOnlyDictionary<string, string>? Headers = null)
 {
+    /// <summary>
+    /// Work to run after the response has been flushed to the client.
+    /// </summary>
+    /// <remarks>
+    /// GENA needs it: the initial event of a subscription must not reach the control point before
+    /// the <c>200 OK</c> that carries the SID, or the client answers 412 for an unknown subscription.
+    /// </remarks>
+    public Action? AfterSend { get; init; }
+
     public static DlnHttpResponse Xml(string body) => new(200, "text/xml; charset=\"utf-8\"", body);
 
     public static DlnHttpResponse Soap(string body) =>
@@ -122,6 +131,7 @@ public sealed class SimpleHttpServer : IAsyncDisposable
 
                 var response = await _handler(request, cancellationToken).ConfigureAwait(false);
                 await WriteResponseAsync(stream, response, cancellationToken).ConfigureAwait(false);
+                RunAfterSend(response);
             }
             catch (OperationCanceledException)
             {
@@ -274,6 +284,28 @@ public sealed class SimpleHttpServer : IAsyncDisposable
         await stream.WriteAsync(headerBytes, cancellationToken).ConfigureAwait(false);
         await stream.WriteAsync(bodyBytes, cancellationToken).ConfigureAwait(false);
         await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Runs the response's after-send hook. Failures are swallowed: the response is already on the
+    /// wire, so a fault here can only be logged by whoever wrote the hook.
+    /// </summary>
+    private static void RunAfterSend(DlnHttpResponse response)
+    {
+        var afterSend = response.AfterSend;
+        if (afterSend is null)
+        {
+            return;
+        }
+
+        try
+        {
+            afterSend();
+        }
+        catch (Exception)
+        {
+            // Deliberately ignored - see remarks.
+        }
     }
 
     private static string ReasonPhrase(int statusCode) => statusCode switch

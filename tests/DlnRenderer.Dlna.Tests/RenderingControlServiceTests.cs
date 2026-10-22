@@ -197,9 +197,27 @@ public class RenderingControlServiceTests
         var service = new RenderingControlService(renderer, _ => { });
 
         var error = await Assert.ThrowsAsync<UpnpException>(() =>
-            GetAsync(service, renderer, "GetVolumeDB", Channel("Master")));
+            GetAsync(service, renderer, "SetVolumeDB", Channel("Master")));
 
         Assert.Equal(UpnpErrorCode.InvalidAction, error.Code);
+    }
+
+    [Fact]
+    public async Task Volume_in_decibels_is_derived_from_the_linear_volume()
+    {
+        var renderer = new FakeTransportRenderer { Volume = 100 };
+        var service = new RenderingControlService(renderer, _ => { });
+
+        var loud = await GetAsync(service, renderer, "GetVolumeDB", Channel("Master"));
+        Assert.Equal("0", loud["CurrentVolume"]);
+
+        renderer.Volume = 50;
+        var half = await GetAsync(service, renderer, "GetVolumeDB", Channel("Master"));
+        Assert.Equal("-6", half["CurrentVolume"]);
+
+        var range = await GetAsync(service, renderer, "GetVolumeDBRange", Channel("Master"));
+        Assert.Equal("0", range["MaxValue"]);
+        Assert.True(int.Parse(range["MinValue"]) < 0);
     }
 
     [Fact]

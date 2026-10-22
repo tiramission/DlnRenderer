@@ -20,6 +20,12 @@ public sealed class SoapRequest(XElement bodyElement)
 {
     public string Action { get; } = bodyElement.Name.LocalName;
 
+    /// <summary>
+    /// Action named by the <c>SOAPAction</c> header, when one was sent. Recorded for diagnostics
+    /// only: the header is not authoritative and never causes a request to be rejected.
+    /// </summary>
+    public string? HeaderAction { get; init; }
+
     public XElement Body { get; } = bodyElement;
 
     /// <summary>Reads an argument by name, or null when absent.</summary>
@@ -72,25 +78,42 @@ public static class SoapXml
             throw UpnpException.InvalidArgs("missing SOAP action element");
         }
 
+        string? headerAction = null;
         if (!string.IsNullOrWhiteSpace(soapActionHeader))
         {
+            // The header is advisory: the element inside Body is what identifies the action.
+            // Several real control points quote it loosely (".../AVTransport:1#Play" with trailing
+            // whitespace, a different service version, or an empty pair of quotes) and a device that
+            // answers 402 for the discrepancy simply looks broken to them. The caller logs the
+            // mismatch instead; refusing here would turn a cosmetic header into a failed cast.
             var expected = soapActionHeader.Trim().Trim('"');
-            var expectedAction = expected.Split('#').Last();
-            if (!string.Equals(expectedAction, actionElement.Name.LocalName, StringComparison.Ordinal))
+            var eol = expected.IndexOfAny(['\r', '\n']);
+            if (eol >= 0)
             {
-                throw UpnpException.InvalidArgs("SOAPAction header does not match the body action");
+                expected = expected[..eol].Trim();
             }
+
+            headerAction = expected.Split('#').LastOrDefault();
         }
 
-        return new SoapRequest(actionElement);
+        return new SoapRequest(actionElement) { HeaderAction = headerAction };
     }
 
     public static string BuildResponse(string serviceType, string action, IEnumerable<KeyValuePair<string, string>> arguments)
     {
-        var response = new XElement(XName.Get($"{action}Response", serviceType));
+        // Shape matches the renderer Chinese casting apps are verified against:
+        //   <u:PlayResponse xmlns:u="urn:...:AVTransport:1"><InstanceID ...>0</InstanceID></u:PlayResponse>
+        // The action name is qualified through the u: prefix, while the out-arguments are
+        // unqualified. Qualifying the arguments too (default xmlns on the response element) is
+        // equally valid per the device architecture, but clients that collect arguments by tag name
+        // - without resolving namespaces - then read an empty result and treat the call as failed.
+        var response = new XElement(
+            XName.Get($"{action}Response", serviceType),
+            new XAttribute(XNamespace.Xmlns + "u", serviceType));
+
         foreach (var (name, value) in arguments)
         {
-            response.Add(new XElement(XName.Get(name, serviceType), value));
+            response.Add(new XElement(name, value));
         }
 
         return BuildEnvelope(response);

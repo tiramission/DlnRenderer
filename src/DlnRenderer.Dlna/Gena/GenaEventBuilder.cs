@@ -19,6 +19,13 @@ namespace DlnRenderer.Dlna.Gena;
 /// </list>
 /// Both must carry the <c>e:</c> namespace <c>urn:schemas-upnp-org:event-1-0</c>, and every value is
 /// escaped by the XML writer rather than by hand.
+/// <para>
+/// Inside the escaped document the event namespace is declared as the <em>default</em> namespace and
+/// the variables are written without a prefix. Clients written against renderers that do this read
+/// the variables by tag name; a document that only declares an <c>m:</c> prefix and writes
+/// <c>&lt;m:TransportState&gt;</c> is skipped by exactly those parsers, so the phone never learns that
+/// playback started and shows the cast as failed.
+/// </para>
 /// </remarks>
 public static class GenaEventBuilder
 {
@@ -45,39 +52,34 @@ public static class GenaEventBuilder
     /// <summary>
     /// Builds a <c>LastChange</c> notification for AVTransport.
     /// </summary>
-    /// <param name="state">Transport state as advertised in <c>TransportState</c>.</param>
+    /// <param name="state">Transport state, e.g. <c>PLAYING</c>.</param>
     /// <param name="status"><c>OK</c> or <c>ERROR_OCCURRED</c>.</param>
-    /// <param name="currentUri">Current media URI, empty when nothing is loaded.</param>
-    /// <param name="uriMetadata">DIDL-Lite metadata sent with the URI, empty when absent.</param>
+    /// <param name="track">Current track number, 0 when nothing is loaded.</param>
+    /// <param name="numberOfTracks">Number of tracks available, 0 or 1 in this renderer.</param>
     /// <param name="duration">Track duration as <c>H:MM:SS</c>, empty when unknown.</param>
-    /// <param name="actions">Actions currently available, comma separated.</param>
     /// <remarks>
-    /// The two URI variables and the two metadata variables are deliberately both present. The AV
-    /// specification defines <c>AVTransportURI</c> as what the control point set and
-    /// <c>CurrentTrackURI</c> as what is playing; they are the same value in this single-track
-    /// renderer, but clients look at one or the other depending on when they subscribed. Omitting
-    /// either leaves a client that subscribed mid-playback unable to learn the URI from the event.
+    /// The variable set is the one casting clients actually consume: they watch
+    /// <c>TransportState</c> to switch the remote control between play and pause, and read the two
+    /// durations to draw the progress bar before their first <c>GetPositionInfo</c> poll. The media
+    /// URI is deliberately absent - it is what <c>SetAVTransportURI</c> already sent, and clients that
+    /// want it call <c>GetMediaInfo</c>.
     /// </remarks>
     public static string BuildAvTransportLastChange(
         string state,
         string status,
-        string currentUri,
-        string uriMetadata,
-        string duration,
-        string actions)
+        int track,
+        int numberOfTracks,
+        string duration)
     {
         var instance = new XElement(
             AvTransportEvent + "InstanceID",
             new XAttribute("val", "0"),
             StateVariable(AvTransportEvent, "TransportState", state),
             StateVariable(AvTransportEvent, "TransportStatus", status),
-            StateVariable(AvTransportEvent, "AVTransportURI", currentUri),
-            StateVariable(AvTransportEvent, "AVTransportURIMetaData", uriMetadata),
-            StateVariable(AvTransportEvent, "CurrentTrackURI", currentUri),
-            StateVariable(AvTransportEvent, "CurrentTrackMetaData", uriMetadata),
-            StateVariable(AvTransportEvent, "CurrentTrackDuration", duration),
             StateVariable(AvTransportEvent, "CurrentMediaDuration", duration),
-            StateVariable(AvTransportEvent, "CurrentTransportActions", actions));
+            StateVariable(AvTransportEvent, "CurrentTrackDuration", duration),
+            StateVariable(AvTransportEvent, "CurrentTrack", track.ToString(CultureInfo.InvariantCulture)),
+            StateVariable(AvTransportEvent, "NumberOfTracks", numberOfTracks.ToString(CultureInfo.InvariantCulture)));
 
         return BuildLastChange(AvTransportEvent, instance);
     }
@@ -108,33 +110,23 @@ public static class GenaEventBuilder
     /// Wraps an <c>&lt;Event&gt;</c> document into the single escaped <c>LastChange</c> property.
     /// </summary>
     /// <remarks>
-    /// The inner document is serialised with the event namespace as its default namespace and the
-    /// <c>xmlns:m</c> prefix the AV specifications use, then stored as text so the outer XML writer
-    /// escapes it exactly once.
+    /// The inner document declares the event namespace as its default namespace (see the type
+    /// remarks) and is stored as text so the outer XML writer escapes it exactly once.
     /// </remarks>
     private static string BuildLastChange(XNamespace eventNamespace, XElement instance)
     {
+        // No prefix mapping is declared: the serializer then emits the namespace of the root as a
+        // default declaration, which is what makes the variables appear unprefixed.
         var document = new XDocument(
             new XDeclaration("1.0", "utf-8", null),
-            new XElement(
-                eventNamespace + "Event",
-                new XAttribute(XNamespace.Xmlns + "e", eventNamespace),
-                new XAttribute(XNamespace.Xmlns + "m", eventNamespace),
-                instance));
+            new XElement(eventNamespace + "Event", instance));
 
         var lastChange = Serialize(document);
 
         return BuildPropertySet([new KeyValuePair<string, string>("LastChange", lastChange)]);
     }
 
-    /// <summary>
-    /// Builds <c>&lt;m:Name val="..."/&gt;</c>.
-    /// </summary>
-    /// <remarks>
-    /// The element must be created in the event namespace, not named "m:Name": XName treats a colon
-    /// as part of a local name and throws. The serializer then emits the m: prefix declared on the
-    /// Event element.
-    /// </remarks>
+    /// <summary>Builds <c>&lt;Name val="..."/&gt;</c> in the event namespace.</summary>
     private static XElement StateVariable(XNamespace eventNamespace, string name, string value)
         => new(eventNamespace + name, new XAttribute("val", value));
 

@@ -16,7 +16,11 @@ public sealed class ConnectionManagerService
     /// <summary>Renderer does not source any content.</summary>
     private const string SourceProtocolInfo = "";
 
-    private static readonly string SinkProtocolInfo = LoadSinkProtocolInfo();
+    /// <summary>
+    /// The advertised sink list. Also used for the service's evented <c>SinkProtocolInfo</c> variable,
+    /// so a subscribing control point and a polling one see exactly the same capabilities.
+    /// </summary>
+    internal static string SinkProtocolInfo { get; } = LoadSinkProtocolInfo();
 
     public string Handle(SoapRequest request)
     {

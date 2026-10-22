@@ -37,6 +37,12 @@ public static class UpnpNamespaces
 /// renderers that vendor casting clients are known to work with. Emitting the same elements with a
 /// <c>d:</c> prefix is spec-valid, but clients that compare element names textually - rather than
 /// resolving namespaces - then fail to recognise the device even though discovery succeeded.
+/// <para>
+/// Field set mirrors the reference renderer that Chinese casting apps (Douyin, Tencent Video) are
+/// verified against: it carries manufacturerURL, modelURL and serialNumber, and casting client
+/// device lists read those to build the entry they show the user. A missing element is not an XML
+/// error, but a client that indexes into a fixed field list can drop the device.
+/// </para>
 /// </remarks>
 public static class DeviceDescriptionBuilder
 {
@@ -57,9 +63,12 @@ public static class DeviceDescriptionBuilder
             Device("UDN", options.Udn),
             Device("friendlyName", options.FriendlyName),
             Device("manufacturer", options.Manufacturer),
-            Device("modelDescription", "DLNA media renderer"),
+            Device("manufacturerURL", options.ManufacturerUrl),
+            Device("modelDescription", "AVTransport Media Renderer"),
             Device("modelName", options.ModelName),
             Device("modelNumber", options.ModelNumber),
+            Device("modelURL", options.ModelUrl),
+            Device("serialNumber", options.SerialNumber),
             // Declared with its own xmlns:dlna exactly as DLNA clients expect to find it.
             new XElement("X_DLNADOC",
                 new XAttribute(XNamespace.Xmlns + "dlna", UpnpNamespaces.Dlna),
@@ -139,40 +148,41 @@ public static class DeviceDescriptionBuilder
     }
 }
 
+/// <summary>
+/// Builds the three service descriptions (SCPDs).
+/// </summary>
+/// <remarks>
+/// Two properties of these documents are load-bearing for real casting clients, and both were the
+/// cause of devices being discovered but not offered as a cast target:
+/// <list type="bullet">
+/// <item>
+/// The root element is serialized in the <em>default</em> namespace. Writing it as
+/// <c>&lt;s:scpd xmlns:s="..."&gt;</c> is equally valid XML, but clients that walk the document by
+/// tag name (rather than by namespace URI) then find no actions at all and conclude the renderer
+/// supports nothing.
+/// </item>
+/// <item>
+/// The action and state-variable tables are complete, including actions this renderer treats as
+/// no-ops (<c>SetPlayMode</c>, <c>Next</c>, <c>Previous</c>). Casting apps read the table to decide
+/// which requests they may send; an action missing from the table is treated as a device that
+/// cannot do it, even though a SOAP call would otherwise have been answered.
+/// </item>
+/// </list>
+/// </remarks>
 public static class ScpdBuilder
 {
     public static string BuildAvTransport()
     {
         var actions = new List<XElement>
         {
-            Action("SetAVTransportURI",
+            Action("GetCurrentTransportActions",
                 In("InstanceID", "A_ARG_TYPE_InstanceID"),
-                In("CurrentURI", "AVTransportURI"),
-                In("CurrentURIMetaData", "AVTransportURIMetaData")),
-            Action("Play",
+                Out("Actions", "CurrentTransportActions")),
+            Action("GetDeviceCapabilities",
                 In("InstanceID", "A_ARG_TYPE_InstanceID"),
-                In("Speed", "TransportPlaySpeed")),
-            Action("Pause", In("InstanceID", "A_ARG_TYPE_InstanceID")),
-            Action("Stop", In("InstanceID", "A_ARG_TYPE_InstanceID")),
-            Action("Seek",
-                In("InstanceID", "A_ARG_TYPE_InstanceID"),
-                In("Unit", "A_ARG_TYPE_SeekMode"),
-                In("Target", "A_ARG_TYPE_SeekTarget")),
-            Action("GetTransportInfo",
-                In("InstanceID", "A_ARG_TYPE_InstanceID"),
-                Out("CurrentTransportState", "TransportState"),
-                Out("CurrentTransportStatus", "TransportStatus"),
-                Out("CurrentSpeed", "TransportPlaySpeed")),
-            Action("GetPositionInfo",
-                In("InstanceID", "A_ARG_TYPE_InstanceID"),
-                Out("Track", "CurrentTrack"),
-                Out("TrackDuration", "CurrentTrackDuration"),
-                Out("TrackMetaData", "CurrentTrackMetaData"),
-                Out("TrackURI", "CurrentTrackURI"),
-                Out("RelTime", "RelativeTimePosition"),
-                Out("AbsTime", "AbsoluteTimePosition"),
-                Out("RelCount", "RelativeCounterPosition"),
-                Out("AbsCount", "AbsoluteCounterPosition")),
+                Out("PlayMedia", "PossiblePlaybackStorageMedia"),
+                Out("RecMedia", "PossibleRecordStorageMedia"),
+                Out("RecQualityModes", "PossibleRecordQualityModes")),
             Action("GetMediaInfo",
                 In("InstanceID", "A_ARG_TYPE_InstanceID"),
                 Out("NrTracks", "NumberOfTracks"),
@@ -184,54 +194,82 @@ public static class ScpdBuilder
                 Out("PlayMedium", "PlaybackStorageMedium"),
                 Out("RecordMedium", "RecordStorageMedium"),
                 Out("WriteStatus", "RecordMediumWriteStatus")),
-            Action("GetDeviceCapabilities",
+            Action("GetPositionInfo",
                 In("InstanceID", "A_ARG_TYPE_InstanceID"),
-                Out("PlayMedia", "PossiblePlaybackStorageMedia"),
-                Out("RecMedia", "PossibleRecordStorageMedia"),
-                Out("RecQualityModes", "PossibleRecordQualityModes")),
+                Out("Track", "CurrentTrack"),
+                Out("TrackDuration", "CurrentTrackDuration"),
+                Out("TrackMetaData", "CurrentTrackMetaData"),
+                Out("TrackURI", "CurrentTrackURI"),
+                Out("RelTime", "RelativeTimePosition"),
+                Out("AbsTime", "AbsoluteTimePosition"),
+                Out("RelCount", "RelativeCounterPosition"),
+                Out("AbsCount", "AbsoluteCounterPosition")),
+            Action("GetTransportInfo",
+                In("InstanceID", "A_ARG_TYPE_InstanceID"),
+                Out("CurrentTransportState", "TransportState"),
+                Out("CurrentTransportStatus", "TransportStatus"),
+                Out("CurrentSpeed", "TransportPlaySpeed")),
             Action("GetTransportSettings",
                 In("InstanceID", "A_ARG_TYPE_InstanceID"),
                 Out("PlayMode", "CurrentPlayMode"),
                 Out("RecQualityMode", "CurrentRecordQualityMode")),
-            Action("GetCurrentTransportActions",
+            Action("Next", In("InstanceID", "A_ARG_TYPE_InstanceID")),
+            Action("Pause", In("InstanceID", "A_ARG_TYPE_InstanceID")),
+            Action("Play",
                 In("InstanceID", "A_ARG_TYPE_InstanceID"),
-                Out("Actions", "CurrentTransportActions")),
+                In("Speed", "TransportPlaySpeed")),
+            Action("Previous", In("InstanceID", "A_ARG_TYPE_InstanceID")),
+            Action("Seek",
+                In("InstanceID", "A_ARG_TYPE_InstanceID"),
+                In("Unit", "A_ARG_TYPE_SeekMode"),
+                In("Target", "A_ARG_TYPE_SeekTarget")),
+            Action("SetAVTransportURI",
+                In("InstanceID", "A_ARG_TYPE_InstanceID"),
+                In("CurrentURI", "AVTransportURI"),
+                In("CurrentURIMetaData", "AVTransportURIMetaData")),
+            Action("SetPlayMode",
+                In("InstanceID", "A_ARG_TYPE_InstanceID"),
+                In("NewPlayMode", "CurrentPlayMode")),
+            Action("Stop", In("InstanceID", "A_ARG_TYPE_InstanceID")),
         };
 
         var variables = new List<XElement>
         {
-            Variable("TransportState", "string", false, ["STOPPED", "PLAYING", "PAUSED_PLAYBACK", "TRANSITIONING"]),
+            Variable("TransportState", "string", false,
+                ["STOPPED", "PAUSED_PLAYBACK", "PLAYING", "TRANSITIONING", "NO_MEDIA_PRESENT"]),
             Variable("TransportStatus", "string", false, ["OK", "ERROR_OCCURRED"]),
-            Variable("TransportPlaySpeed", "string", false, ["1"]),
+            Variable("TransportPlaySpeed", "string", false, ["0.5", "0.75", "1", "1.25", "1.5", "2"]),
             Variable("AVTransportURI", "string", false),
             Variable("AVTransportURIMetaData", "string", false),
             Variable("NextAVTransportURI", "string", false),
             Variable("NextAVTransportURIMetaData", "string", false),
-            Variable("CurrentTrack", "ui4", false),
+            Variable("CurrentTrack", "ui4", false, max: "65535", min: "0", step: "1"),
             Variable("CurrentTrackDuration", "string", false),
             Variable("CurrentTrackMetaData", "string", false),
             Variable("CurrentTrackURI", "string", false),
+            Variable("CurrentTrackTitle", "string", false),
             Variable("CurrentMediaDuration", "string", false),
-            Variable("NumberOfTracks", "ui4", false),
+            Variable("NumberOfTracks", "ui4", false, min: "0", max: "65535"),
             Variable("RelativeTimePosition", "string", false),
             Variable("AbsoluteTimePosition", "string", false),
             Variable("RelativeCounterPosition", "i4", false),
             Variable("AbsoluteCounterPosition", "i4", false),
             Variable("CurrentTransportActions", "string", false),
-            Variable("PlaybackStorageMedium", "string", false, ["NONE", "NETWORK"]),
+            Variable("PlaybackStorageMedium", "string", false, ["NONE", "UNKNOWN", "CD-DA", "HDD", "NETWORK"]),
+            Variable("PossiblePlaybackStorageMedia", "string", false, ["NONE", "UNKNOWN", "CD-DA", "HDD", "NETWORK"]),
             Variable("RecordStorageMedium", "string", false, ["NOT_IMPLEMENTED"]),
-            Variable("PossiblePlaybackStorageMedia", "string", false),
-            Variable("PossibleRecordStorageMedia", "string", false),
+            Variable("PossibleRecordStorageMedia", "string", false, ["NOT_IMPLEMENTED"]),
             Variable("RecordMediumWriteStatus", "string", false, ["NOT_IMPLEMENTED"]),
-            Variable("PossibleRecordQualityModes", "string", false),
+            Variable("PossibleRecordQualityModes", "string", false, ["NOT_IMPLEMENTED"]),
             Variable("CurrentRecordQualityMode", "string", false, ["NOT_IMPLEMENTED"]),
-            Variable("CurrentPlayMode", "string", false, ["NORMAL"]),
+            Variable("CurrentPlayMode", "string", false, ["NORMAL", "REPEAT_ONE", "REPEAT_ALL", "SHUFFLE", "SHUFFLE_NOREPEAT"]),
+            Variable("DisplayCurrentSubtitle", "boolean", false),
             // AVTransport eventing is carried by LastChange, whose value is the escaped Event XML.
             // The individual variables stay non-evented: the AV specifications require exactly this
             // shape, and clients that receive a bare TransportState notification ignore it.
             Variable("LastChange", "string", true),
             Variable("A_ARG_TYPE_InstanceID", "ui4", false),
-            Variable("A_ARG_TYPE_SeekMode", "string", false, ["REL_TIME", "ABS_TIME"]),
+            Variable("A_ARG_TYPE_SeekMode", "string", false, ["REL_TIME", "ABS_TIME", "TRACK_NR"]),
             Variable("A_ARG_TYPE_SeekTarget", "string", false),
         };
 
@@ -260,10 +298,14 @@ public static class ScpdBuilder
 
         var variables = new List<XElement>
         {
-            Variable("SourceProtocolInfo", "string", false),
-            Variable("SinkProtocolInfo", "string", false),
-            Variable("CurrentConnectionIDs", "string", false),
-            Variable("A_ARG_TYPE_ConnectionStatus", "string", false, ["OK", "Unknown"]),
+            // The three variables are evented exactly as the reference renderer declares them, so a
+            // client that subscribes before casting receives the sink list in the initial event
+            // instead of having to call GetProtocolInfo first.
+            Variable("SourceProtocolInfo", "string", true),
+            Variable("SinkProtocolInfo", "string", true),
+            Variable("CurrentConnectionIDs", "string", true),
+            Variable("A_ARG_TYPE_ConnectionStatus", "string", false,
+                ["OK", "ContentFormatMismatch", "InsufficientBandwidth", "UnreliableChannel", "Unknown"]),
             Variable("A_ARG_TYPE_ConnectionManager", "string", false),
             Variable("A_ARG_TYPE_Direction", "string", false, ["Input", "Output"]),
             Variable("A_ARG_TYPE_ProtocolInfo", "string", false),
@@ -279,24 +321,33 @@ public static class ScpdBuilder
     {
         var actions = new List<XElement>
         {
+            Action("GetMute",
+                In("InstanceID", "A_ARG_TYPE_InstanceID"),
+                In("Channel", "A_ARG_TYPE_Channel"),
+                Out("CurrentMute", "Mute")),
+            Action("GetVolume",
+                In("InstanceID", "A_ARG_TYPE_InstanceID"),
+                In("Channel", "A_ARG_TYPE_Channel"),
+                Out("CurrentVolume", "Volume")),
+            Action("GetVolumeDB",
+                In("InstanceID", "A_ARG_TYPE_InstanceID"),
+                In("Channel", "A_ARG_TYPE_Channel"),
+                Out("CurrentVolume", "VolumeDB")),
+            Action("GetVolumeDBRange",
+                In("InstanceID", "A_ARG_TYPE_InstanceID"),
+                In("Channel", "A_ARG_TYPE_Channel"),
+                Out("MinValue", "VolumeDB"),
+                Out("MaxValue", "VolumeDB")),
             Action("ListPresets",
                 In("InstanceID", "A_ARG_TYPE_InstanceID"),
                 Out("CurrentPresetNameList", "PresetNameList")),
             Action("SelectPreset",
                 In("InstanceID", "A_ARG_TYPE_InstanceID"),
                 In("PresetName", "A_ARG_TYPE_PresetName")),
-            Action("GetMute",
-                In("InstanceID", "A_ARG_TYPE_InstanceID"),
-                In("Channel", "A_ARG_TYPE_Channel"),
-                Out("CurrentMute", "Mute")),
             Action("SetMute",
                 In("InstanceID", "A_ARG_TYPE_InstanceID"),
                 In("Channel", "A_ARG_TYPE_Channel"),
                 In("DesiredMute", "Mute")),
-            Action("GetVolume",
-                In("InstanceID", "A_ARG_TYPE_InstanceID"),
-                In("Channel", "A_ARG_TYPE_Channel"),
-                Out("CurrentVolume", "Volume")),
             Action("SetVolume",
                 In("InstanceID", "A_ARG_TYPE_InstanceID"),
                 In("Channel", "A_ARG_TYPE_Channel"),
@@ -309,6 +360,7 @@ public static class ScpdBuilder
             Variable("LastChange", "string", true),
             Variable("Mute", "boolean", false),
             Variable("Volume", "ui2", false, min: "0", max: "100", step: "1"),
+            Variable("VolumeDB", "i2", false, min: "-32767", max: "32767"),
             Variable("A_ARG_TYPE_Channel", "string", false, ["Master"]),
             Variable("A_ARG_TYPE_InstanceID", "ui4", false),
             Variable("A_ARG_TYPE_PresetName", "string", false, ["FactoryDefaults"]),
@@ -319,17 +371,21 @@ public static class ScpdBuilder
 
     private static string BuildScpd(IEnumerable<XElement> actions, IEnumerable<XElement> variables)
     {
+        // No xmlns:s prefix: see the type remarks. Child elements already carry the service
+        // namespace, so declaring it as the default on the root produces unprefixed tags.
         var document = new XDocument(
             new XDeclaration("1.0", "utf-8", null),
             new XElement(UpnpNamespaces.Service + "scpd",
-                new XAttribute(XNamespace.Xmlns + "s", UpnpNamespaces.Service),
                 new XElement(UpnpNamespaces.Service + "specVersion",
                     new XElement(UpnpNamespaces.Service + "major", "1"),
                     new XElement(UpnpNamespaces.Service + "minor", "0")),
                 new XElement(UpnpNamespaces.Service + "actionList", actions),
                 new XElement(UpnpNamespaces.Service + "serviceStateTable", variables)));
 
-        return document.ToString(SaveOptions.DisableFormatting);
+        // The declaration is emitted explicitly: the reference renderer's SCPDs carry one, and an
+        // SCPD fetched with a plain XML parser behaves identically either way, so matching it costs
+        // nothing and removes a difference a client could branch on.
+        return DeviceDescriptionBuilder.SerializeWithDeclaration(document);
     }
 
     private static XElement Action(string name, params XElement[] arguments)

@@ -81,38 +81,43 @@ public class AvTransportServiceTests
     }
 
     [Fact]
-    public async Task SetAVTransportURI_maps_a_load_failure_to_ResourceNotFound()
+    public async Task SetAVTransportURI_survives_a_load_failure()
     {
+        // The media server may not be ready yet; the URI is still accepted so the control point can
+        // play and retry. Faulting here makes the phone report a failed cast immediately.
         var (service, renderer) = Create();
         renderer.FailLoad = true;
 
-        var error = await FaultAsync(() => service.HandleAsync(
+        var response = await service.HandleAsync(
             SoapBody.AvTransport("SetAVTransportURI",
                 ("InstanceID", "0"),
                 ("CurrentURI", "http://192.168.1.5/missing.mp4")),
-            CancellationToken.None));
+            CancellationToken.None);
 
-        Assert.Equal(UpnpErrorCode.ResourceNotFound, error.Code);
-        Assert.Null(renderer.CurrentUri);
+        ParseResponse(response, "SetAVTransportURI");
+        Assert.Contains("load:http://192.168.1.5/missing.mp4", renderer.Calls);
     }
 
     [Theory]
     [InlineData("Play")]
     [InlineData("Pause")]
     [InlineData("Seek")]
-    public async Task Transport_actions_require_media(string action)
+    public async Task Transport_actions_without_media_are_accepted_as_no_ops(string action)
     {
-        var (service, _) = Create();
-        var error = await FaultAsync(() => service.HandleAsync(
+        // Casting clients issue these before SetAVTransportURI (restoring a position, resuming a
+        // previous session). Answering 701 for them aborts the cast on the phone.
+        var (service, renderer) = Create();
+        var response = await service.HandleAsync(
             SoapBody.AvTransport(
                 action,
                 ("InstanceID", "0"),
                 ("Speed", "1"),
                 ("Unit", "REL_TIME"),
                 ("Target", "00:00:10")),
-            CancellationToken.None));
+            CancellationToken.None);
 
-        Assert.Equal(UpnpErrorCode.TransitionNotAvailable, error.Code);
+        ParseResponse(response, action);
+        Assert.Empty(renderer.Calls);
     }
 
     [Fact]
@@ -163,7 +168,7 @@ public class AvTransportServiceTests
     }
 
     [Fact]
-    public async Task Play_rejects_a_non_normal_speed()
+    public async Task Play_at_another_speed_is_played_at_normal_speed()
     {
         var (service, renderer) = Create();
         await service.HandleAsync(
@@ -172,12 +177,30 @@ public class AvTransportServiceTests
                 ("CurrentURI", "http://192.168.1.5/clip.mp3")),
             CancellationToken.None);
 
-        var error = await FaultAsync(() => service.HandleAsync(
+        // Only 1x exists, but the control point's remembered speed is not a protocol error: play
+        // normally instead of refusing a cast the user already confirmed.
+        var response = await service.HandleAsync(
             SoapBody.AvTransport("Play", ("InstanceID", "0"), ("Speed", "2")),
-            CancellationToken.None));
+            CancellationToken.None);
 
-        Assert.Equal(UpnpErrorCode.ArgumentValueInvalid, error.Code);
-        Assert.DoesNotContain("play", renderer.Calls);
+        ParseResponse(response, "Play");
+        Assert.Contains("play", renderer.Calls);
+    }
+
+    [Theory]
+    [InlineData("Next")]
+    [InlineData("Previous")]
+    [InlineData("SetPlayMode")]
+    public async Task Queue_and_play_mode_actions_are_accepted(string action)
+    {
+        var (service, renderer) = Create();
+
+        var response = await service.HandleAsync(
+            SoapBody.AvTransport(action, ("InstanceID", "0"), ("NewPlayMode", "REPEAT_ALL")),
+            CancellationToken.None);
+
+        ParseResponse(response, action);
+        Assert.Empty(renderer.Calls);
     }
 
     [Theory]
@@ -303,7 +326,7 @@ public class AvTransportServiceTests
     }
 
     [Fact]
-    public async Task Seek_rejects_bad_units_targets_and_positions_past_the_end()
+    public async Task Seek_clamps_past_the_end_and_ignores_track_number_seeks()
     {
         var (service, renderer) = Create();
         await service.HandleAsync(
@@ -313,20 +336,25 @@ public class AvTransportServiceTests
             CancellationToken.None);
         renderer.Duration = TimeSpan.FromSeconds(30);
 
-        var badUnit = await FaultAsync(() => service.HandleAsync(
-            SoapBody.AvTransport("Seek", ("InstanceID", "0"), ("Unit", "TRACK_NR"), ("Target", "1")),
-            CancellationToken.None));
-        Assert.Equal(UpnpErrorCode.ArgumentValueInvalid, badUnit.Code);
+        // Seeking past the end is routine (resume position, "jump to end"): clamp instead of
+        // faulting, which is what aborts the cast on the phone.
+        await service.HandleAsync(
+            SoapBody.AvTransport("Seek", ("InstanceID", "0"), ("Unit", "REL_TIME"), ("Target", "00:10:00")),
+            CancellationToken.None);
+        Assert.Equal(30, renderer.Position.TotalSeconds);
 
+        // A queue of one: any track number is the current track, so nothing is seeked.
+        var beforeTrackSeek = renderer.Calls.Count;
+        await service.HandleAsync(
+            SoapBody.AvTransport("Seek", ("InstanceID", "0"), ("Unit", "TRACK_NR"), ("Target", "1")),
+            CancellationToken.None);
+        Assert.Equal(beforeTrackSeek, renderer.Calls.Count);
+
+        // A target that is not a time at all is still a genuine protocol error.
         var badTarget = await FaultAsync(() => service.HandleAsync(
             SoapBody.AvTransport("Seek", ("InstanceID", "0"), ("Unit", "REL_TIME"), ("Target", "not-a-time")),
             CancellationToken.None));
         Assert.Equal(UpnpErrorCode.ArgumentValueInvalid, badTarget.Code);
-
-        var tooFar = await FaultAsync(() => service.HandleAsync(
-            SoapBody.AvTransport("Seek", ("InstanceID", "0"), ("Unit", "REL_TIME"), ("Target", "00:10:00")),
-            CancellationToken.None));
-        Assert.Equal(UpnpErrorCode.ArgumentValueOutOfRange, tooFar.Code);
     }
 
     [Fact]
@@ -425,6 +453,25 @@ public class AvTransportServiceTests
     }
 
     [Fact]
+    public async Task Response_uses_a_u_prefixed_action_with_unqualified_arguments()
+    {
+        var (service, _) = Create();
+
+        var xml = await service.HandleAsync(
+            SoapBody.AvTransport("GetTransportInfo", ("InstanceID", "0")),
+            CancellationToken.None);
+
+        // The action element is qualified through the u: prefix; the out-arguments are not.
+        // Clients that collect arguments by tag name depend on exactly this shape.
+        Assert.Contains(
+            "<u:GetTransportInfoResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">",
+            xml,
+            StringComparison.Ordinal);
+        Assert.Contains("<CurrentTransportState>", xml, StringComparison.Ordinal);
+        Assert.DoesNotContain(":CurrentTransportState", xml, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Soap_parser_rejects_external_entities()
     {
         const string payload =
@@ -439,18 +486,22 @@ public class AvTransportServiceTests
     }
 
     [Fact]
-    public void Soap_parser_rejects_a_mismatched_soapaction_header()
+    public void Soap_parser_tolerates_a_mismatched_soapaction_header()
     {
         var body = SoapBody.Build(
             SoapNamespaces.AvTransportServiceType,
             "Play",
             ("InstanceID", "0"));
 
-        var error = Assert.Throws<UpnpException>(() => SoapXml.Parse(
-            body,
-            $"\"{SoapNamespaces.AvTransportServiceType}#Pause\""));
+        // The body identifies the action; the header is advisory. Real clients quote it loosely
+        // (wrong action, extra whitespace, empty quotes) and a 402 turns that into a failed cast.
+        var parsed = SoapXml.Parse(body, $"\"{SoapNamespaces.AvTransportServiceType}#Pause\"");
 
-        Assert.Equal(UpnpErrorCode.InvalidArgs, error.Code);
+        Assert.Equal("Play", parsed.Action);
+        Assert.Equal("Pause", parsed.HeaderAction);
+
+        // A header that is not even an action name must not break parsing either.
+        Assert.Equal("Play", SoapXml.Parse(body, "garbage").Action);
     }
 
     [Fact]

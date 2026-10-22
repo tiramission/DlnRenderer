@@ -10,6 +10,15 @@ namespace DlnRenderer.Dlna.AvTransport;
 /// Implements the AVTransport:1 actions this renderer actually supports. Every response is built
 /// from a fresh player snapshot, so a SOAP reply never claims a state the player is not in.
 /// </summary>
+/// <remarks>
+/// Transport commands are accepted leniently: <c>Play</c>, <c>Pause</c>, <c>Stop</c> and <c>Seek</c>
+/// never fault because "no media is loaded" or "the target is past the end". Casting clients drive
+/// them that way routinely - restoring a position before the URI arrives, re-issuing Play on a
+/// resume, seeking into a stream whose duration is still unknown - and a device that answers
+/// 701/601 to those makes the phone give up and report a failed cast. The state the renderer reports
+/// afterwards still comes from the player, so nothing is faked: the command is simply a no-op when
+/// there is nothing to act on.
+/// </remarks>
 public sealed class AvTransportService(ITransportRenderer renderer, Action<string> log)
 {
     private const uint SupportedInstanceId = 0;
@@ -17,6 +26,14 @@ public sealed class AvTransportService(ITransportRenderer renderer, Action<strin
     public async Task<string> HandleAsync(SoapRequest request, CancellationToken cancellationToken)
     {
         var instanceId = ReadInstanceId(request);
+
+        if (!string.IsNullOrEmpty(request.HeaderAction)
+            && !string.Equals(request.HeaderAction, request.Action, StringComparison.Ordinal))
+        {
+            // Cosmetic mismatch (see SoapXml.Parse): the body wins, but it is worth a log line when
+            // diagnosing a client that appears to send one action and get another's answer.
+            log($"soap header/body action mismatch: header={request.HeaderAction} body={request.Action}");
+        }
 
         switch (request.Action)
         {
@@ -29,8 +46,7 @@ public sealed class AvTransportService(ITransportRenderer renderer, Action<strin
                 return Respond(request, []);
 
             case "Pause":
-                RequireMedia("Pause");
-                await InvokeRendererAsync(() => renderer.PauseAsync(cancellationToken), "Pause").ConfigureAwait(false);
+                await PauseAsync(cancellationToken).ConfigureAwait(false);
                 return Respond(request, []);
 
             case "Stop":
@@ -39,6 +55,17 @@ public sealed class AvTransportService(ITransportRenderer renderer, Action<strin
 
             case "Seek":
                 await SeekAsync(request, cancellationToken).ConfigureAwait(false);
+                return Respond(request, []);
+
+            // Single-track renderer: the queue commands are declared because clients read the SCPD
+            // to decide what they may send, and answering them is a no-op rather than a fault.
+            case "Next":
+            case "Previous":
+                log($"{request.Action} ignored: this renderer has a single-item queue");
+                return Respond(request, []);
+
+            case "SetPlayMode":
+                log($"play mode '{request.Argument("NewPlayMode")}' accepted (single-item playback, no looping implemented)");
                 return Respond(request, []);
 
             case "GetTransportInfo":
@@ -104,8 +131,11 @@ public sealed class AvTransportService(ITransportRenderer renderer, Action<strin
         }
         catch (Exception ex)
         {
+            // The URI is stored by the renderer before it touches the player, so the control point
+            // can still query it and retry. Reporting the load failure as a SOAP fault would abort
+            // the cast on the phone (the media server may simply not be ready yet); the failure is
+            // surfaced to the local UI through the renderer's error state instead.
             log($"avtransport load failed for {SafeUri(uri)}: {ex.Message}");
-            throw new UpnpException(UpnpErrorCode.ResourceNotFound, "the media could not be loaded");
         }
 
         log($"avtransport set uri {SafeUri(uri)}");
@@ -113,17 +143,35 @@ public sealed class AvTransportService(ITransportRenderer renderer, Action<strin
 
     private async Task PlayAsync(SoapRequest request, CancellationToken cancellationToken)
     {
-        RequireMedia("Play");
-
         var speed = request.Argument("Speed");
+
+        // Only normal speed is implemented, but a rate other than "1" is not a reason to refuse:
+        // clients send the value they last used for a different device. Log it and play at 1x.
         if (!string.IsNullOrWhiteSpace(speed) && speed.Trim() != "1")
         {
-            throw new UpnpException(UpnpErrorCode.ArgumentValueInvalid, "only normal play speed is supported");
+            log($"Play requested at speed '{speed.Trim()}'; playing at 1x");
+        }
+
+        if (renderer.CurrentUri is null)
+        {
+            log("Play ignored: no media has been set with SetAVTransportURI");
+            return;
         }
 
         await InvokeRendererAsync(
             () => renderer.PlayAsync(cancellationToken),
             "Play").ConfigureAwait(false);
+    }
+
+    private async Task PauseAsync(CancellationToken cancellationToken)
+    {
+        if (renderer.CurrentUri is null)
+        {
+            log("Pause ignored: no media has been set with SetAVTransportURI");
+            return;
+        }
+
+        await InvokeRendererAsync(() => renderer.PauseAsync(cancellationToken), "Pause").ConfigureAwait(false);
     }
 
     /// <summary>
@@ -153,13 +201,22 @@ public sealed class AvTransportService(ITransportRenderer renderer, Action<strin
 
     private async Task SeekAsync(SoapRequest request, CancellationToken cancellationToken)
     {
-        RequireMedia("Seek");
-
         var unit = request.Argument("Unit")?.Trim();
+
+        // TRACK_NR addresses a position in a queue; there is exactly one track here, so any value is
+        // the current one. Clients probe with it before deciding whether seek is available.
+        if (string.Equals(unit, "TRACK_NR", StringComparison.OrdinalIgnoreCase))
+        {
+            log($"Seek by track number ignored (single-item queue): '{request.Argument("Target")}'");
+            return;
+        }
+
         if (!string.Equals(unit, "REL_TIME", StringComparison.Ordinal)
             && !string.Equals(unit, "ABS_TIME", StringComparison.Ordinal))
         {
-            throw new UpnpException(UpnpErrorCode.ArgumentValueInvalid, "only REL_TIME and ABS_TIME seeks are supported");
+            // An absent or unknown unit still carries a time target in practice; only a target that
+            // cannot be parsed at all is a genuine protocol error.
+            log($"Seek with unsupported unit '{unit}'; treating the target as an absolute time");
         }
 
         var target = request.Argument("Target");
@@ -168,10 +225,21 @@ public sealed class AvTransportService(ITransportRenderer renderer, Action<strin
             throw new UpnpException(UpnpErrorCode.ArgumentValueInvalid, "Target must be H+:MM:SS");
         }
 
-        var status = await renderer.GetStatusAsync(cancellationToken).ConfigureAwait(false);
-        if (status.Duration is { } duration && position > duration)
+        if (renderer.CurrentUri is null)
         {
-            throw new UpnpException(UpnpErrorCode.ArgumentValueOutOfRange, "Target is past the end of the media");
+            log($"Seek to {target} ignored: no media has been set with SetAVTransportURI");
+            return;
+        }
+
+        var status = await renderer.GetStatusAsync(cancellationToken).ConfigureAwait(false);
+
+        // Clamp instead of faulting. A duration reported a moment ago can be shorter than the
+        // target for a live or still-loading stream, and clients seek to the very end routinely
+        // (resume position, "jump to end" of a clip). Faulting 601 aborts the cast on the phone.
+        if (status.Duration is { } duration && duration > TimeSpan.Zero && position > duration)
+        {
+            log($"Seek target {target} is past the duration {FormatTime(duration)}; clamping");
+            position = duration;
         }
 
         try
@@ -231,14 +299,6 @@ public sealed class AvTransportService(ITransportRenderer renderer, Action<strin
             new("RecordMedium", "NOT_IMPLEMENTED"),
             new("WriteStatus", "NOT_IMPLEMENTED"),
         ]);
-    }
-
-    private void RequireMedia(string action)
-    {
-        if (renderer.CurrentUri is null)
-        {
-            throw new UpnpException(UpnpErrorCode.TransitionNotAvailable, $"{action} requires SetAVTransportURI first");
-        }
     }
 
     private uint ReadInstanceId(SoapRequest request)

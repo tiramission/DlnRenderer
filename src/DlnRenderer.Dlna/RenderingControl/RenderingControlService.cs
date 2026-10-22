@@ -47,6 +47,25 @@ public sealed class RenderingControlService(ITransportRenderer renderer, Action<
                     Pair("CurrentMute", muted ? "1" : "0"),
                 ]);
 
+            // VolumeDB is declared because clients read the SCPD to learn which volume actions a
+            // renderer has, and several only offer a volume slider when a dB variant is present.
+            // The value is derived from the same linear 0-100 volume, so the two never disagree.
+            case "GetVolumeDB":
+                RequireMasterChannel(request, "GetVolumeDB");
+                var dbVolume = await renderer.GetVolumeAsync(cancellationToken).ConfigureAwait(false);
+                return Respond(request,
+                [
+                    Pair("CurrentVolume", ToDecibels(dbVolume).ToString(CultureInfo.InvariantCulture)),
+                ]);
+
+            case "GetVolumeDBRange":
+                RequireMasterChannel(request, "GetVolumeDBRange");
+                return Respond(request,
+                [
+                    Pair("MinValue", MinDecibels.ToString(CultureInfo.InvariantCulture)),
+                    Pair("MaxValue", "0"),
+                ]);
+
             case "SetMute":
                 RequireMasterChannel(request, "SetMute");
                 var mute = ParseMute(request.Argument("DesiredMute"));
@@ -100,6 +119,25 @@ public sealed class RenderingControlService(ITransportRenderer renderer, Action<
     }
 
     private static int Clamp(int volume) => Math.Clamp(volume, 0, 100);
+
+    /// <summary>Floor reported for <c>GetVolumeDBRange</c>: 100 dB of attenuation, i.e. silence.</summary>
+    private const int MinDecibels = -100;
+
+    /// <summary>
+    /// Linear 0-100 player volume as dB, where 100 is 0 dB. Silence (0) is reported at the floor
+    /// rather than as negative infinity, which is not representable in the i2 the service declares.
+    /// </summary>
+    private static int ToDecibels(int volume)
+    {
+        var clamped = Math.Clamp(volume, 0, 100);
+        if (clamped == 0)
+        {
+            return MinDecibels;
+        }
+
+        var db = 20 * Math.Log10(clamped / 100.0);
+        return Math.Clamp((int)Math.Round(db, MidpointRounding.AwayFromZero), MinDecibels, 0);
+    }
 
     private static int ParseVolume(string? text)
     {

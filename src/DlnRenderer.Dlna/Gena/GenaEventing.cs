@@ -89,12 +89,14 @@ public sealed class GenaEventing : IAsyncDisposable
         _log($"subscription created {subscription.Sid} for {service} -> {subscription.Callback.Uri}");
 
         // The initial event carries every evented variable so the client never has to poll to learn
-        // the current state. A failed first delivery is not fatal: the client may not be listening
-        // yet, and the subscription stays until its own failure budget runs out.
+        // the current state. It is built now but delivered only after the 200 OK below has been
+        // flushed: a control point that has not yet registered the SID answers 412 and, in practice,
+        // throws the subscription away. A failed first delivery is not fatal either way - the
+        // subscription stays until its own failure budget runs out.
+        string body;
         try
         {
-            var body = await BuildInitialBodyAsync(service, cancellationToken).ConfigureAwait(false);
-            await _notifier.SendInitialAsync(subscription, body, cancellationToken).ConfigureAwait(false);
+            body = await BuildInitialBodyAsync(service, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -102,10 +104,16 @@ public sealed class GenaEventing : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            _log($"initial event for {subscription.Sid} failed: {ex.Message}");
+            _log($"initial event for {subscription.Sid} could not be built: {ex.Message}");
+            body = GenaEventBuilder.BuildPropertySet([]);
         }
 
-        return new DlnHttpResponse(200, "text/plain; charset=\"utf-8\"", string.Empty, created.Headers);
+        var accepted = new DlnHttpResponse(200, "text/plain; charset=\"utf-8\"", string.Empty, created.Headers)
+        {
+            AfterSend = () => _notifier.SendInitial(subscription, body),
+        };
+
+        return accepted;
     }
 
     /// <summary>Handles UNSUBSCRIBE on a service's event endpoint.</summary>
@@ -126,6 +134,7 @@ public sealed class GenaEventing : IAsyncDisposable
         }
 
         _log($"subscription removed {sid}");
+        _notifier.Forget(sid);
         return new DlnHttpResponse(200, "text/plain; charset=\"utf-8\"", string.Empty);
     }
 
@@ -145,12 +154,13 @@ public sealed class GenaEventing : IAsyncDisposable
     /// </remarks>
     private string BuildAvTransportBody()
     {
-        var uri = _renderer.CurrentUri?.AbsoluteUri ?? string.Empty;
-        var metadata = _renderer.CurrentMetadata ?? string.Empty;
-        var state = _lastAvState;
-        var status = _lastAvStatus;
-        var duration = _lastAvDuration;
-        return GenaEventBuilder.BuildAvTransportLastChange(state, status, uri, metadata, duration, AvTransportActions(state));
+        var hasMedia = _renderer.CurrentUri is not null;
+        return GenaEventBuilder.BuildAvTransportLastChange(
+            _lastAvState,
+            _lastAvStatus,
+            TrackNumber(hasMedia),
+            hasMedia ? 1 : 0,
+            _lastAvDuration);
     }
 
     private string BuildRenderingControlBody()
@@ -216,14 +226,14 @@ public sealed class GenaEventing : IAsyncDisposable
             case GenaServiceKind.AvTransport:
                 {
                     var snapshot = await _renderer.GetStatusAsync(cancellationToken).ConfigureAwait(false);
+                    var hasMedia = _renderer.CurrentUri is not null;
                     UpdateAvTransport(snapshot.State, snapshot.Error, snapshot.Duration);
                     return GenaEventBuilder.BuildAvTransportLastChange(
                         AvTransportService.MapState(snapshot.State),
                         string.IsNullOrEmpty(snapshot.Error) ? "OK" : "ERROR_OCCURRED",
-                        _renderer.CurrentUri?.AbsoluteUri ?? string.Empty,
-                        _renderer.CurrentMetadata ?? string.Empty,
-                        AvTransportService.FormatDuration(snapshot.Duration),
-                        AvTransportActions(AvTransportService.MapState(snapshot.State)));
+                        TrackNumber(hasMedia),
+                        hasMedia ? 1 : 0,
+                        AvTransportService.FormatDuration(snapshot.Duration));
                 }
 
             case GenaServiceKind.RenderingControl:
@@ -235,20 +245,21 @@ public sealed class GenaEventing : IAsyncDisposable
                 }
 
             default:
-                // ConnectionManager has no evented variables in this renderer; an empty property set
-                // is still sent so the client's SEQ 0 expectation is satisfied.
-                return GenaEventBuilder.BuildPropertySet([]);
+                // ConnectionManager evented variables, sent as direct properties rather than through
+                // LastChange. A client subscribing here expects the sink protocol list in the initial
+                // event; sending an empty property set leaves it believing the renderer accepts no
+                // formats at all.
+                return GenaEventBuilder.BuildPropertySet(
+                [
+                    new("A_ARG_TYPE_Direction", "Input"),
+                    new("SinkProtocolInfo", ConnectionManagerService.SinkProtocolInfo),
+                    new("CurrentConnectionIDs", "0"),
+                ]);
         }
     }
 
-    /// <summary>Actions the renderer advertises for a transport state, matching GetCurrentTransportActions.</summary>
-    private static string AvTransportActions(string state) => state switch
-    {
-        "PLAYING" => "Pause,Stop,Seek",
-        "PAUSED_PLAYBACK" => "Play,Stop,Seek",
-        "TRANSITIONING" => "Stop",
-        _ => "Play,Stop,Seek",
-    };
+    /// <summary>Track number as advertised in events: 1 while something is loaded, 0 when empty.</summary>
+    private static int TrackNumber(bool hasMedia) => hasMedia ? 1 : 0;
 
     private static DlnHttpResponse Fail(GenaResult result)
         => new(result.StatusCode, "text/plain; charset=\"utf-8\"", result.Message ?? string.Empty);

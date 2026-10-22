@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
 using System.Text;
@@ -21,6 +22,14 @@ namespace DlnRenderer.Dlna.Gena;
 /// <item>deliveries are fire-and-forget from the caller's point of view - nothing awaits them on the
 /// playback or SOAP path.</item>
 /// </list>
+/// <para>
+/// Deliveries for one subscription are serialised through a per-subscription pump. GENA numbers
+/// notifications per subscriber, and a callback that receives SEQ 5 before SEQ 3 - which is what
+/// concurrent delivery produces on a phone whose HTTP server answers slowly - either discards the
+/// events or drops the subscription, leaving the casting UI stuck on "connecting" while the media
+/// plays. The pump also collapses a backlog: only the newest pending state is kept, because an
+/// intermediate transport state that already passed is worse than useless when it arrives late.
+/// </para>
 /// </remarks>
 public sealed class GenaNotifier : IAsyncDisposable
 {
@@ -30,6 +39,7 @@ public sealed class GenaNotifier : IAsyncDisposable
     private readonly SemaphoreSlim _gate;
     private readonly HttpClient _client;
     private readonly CancellationTokenSource _cts = new();
+    private readonly ConcurrentDictionary<string, DeliveryPump> _pumps = new(StringComparer.OrdinalIgnoreCase);
 
     public GenaNotifier(GenaOptions options, GenaSubscriptionRegistry registry, Action<string> log)
     {
@@ -96,23 +106,32 @@ public sealed class GenaNotifier : IAsyncDisposable
 
         foreach (var subscription in subscribers)
         {
-            _ = DeliverAsync(subscription, body);
+            PumpFor(subscription).Enqueue(body);
         }
     }
 
     /// <summary>
-    /// Sends the initial event required right after a subscription is accepted.
+    /// Queues the initial event required right after a subscription is accepted.
     /// </summary>
     /// <remarks>
     /// GENA requires the initial event to use SEQ 0 and to contain every evented variable, because it
-    /// is how a subscriber learns the current state without polling. It is awaited by the caller so
-    /// the 200 OK is only sent once the first notification has been attempted, matching what control
-    /// points expect when they subscribe and immediately read their inbox.
+    /// is how a subscriber learns the current state without polling.
+    /// <para>
+    /// It must not be sent before the <c>200 OK</c> for the SUBSCRIBE has been written: a client that
+    /// has not finished processing the subscription yet does not know the SID and answers the
+    /// notification with <c>412 Precondition Failed</c>, which in practice makes it discard the
+    /// subscription it just created. The caller therefore invokes this from the response's
+    /// after-send hook.
+    /// </para>
     /// </remarks>
-    public async Task SendInitialAsync(GenaSubscription subscription, string body, CancellationToken cancellationToken)
-    {
-        await DeliverAsync(subscription, body, cancellationToken).ConfigureAwait(false);
-    }
+    public void SendInitial(GenaSubscription subscription, string body)
+        => PumpFor(subscription).EnqueueInitial(body);
+
+    /// <summary>Drops the pump of a subscription that no longer exists.</summary>
+    public void Forget(string sid) => _pumps.TryRemove(sid, out _);
+
+    private DeliveryPump PumpFor(GenaSubscription subscription)
+        => _pumps.GetOrAdd(subscription.Sid, _ => new DeliveryPump(this, subscription));
 
     private async Task DeliverAsync(GenaSubscription subscription, string body, CancellationToken cancellationToken = default)
     {
@@ -202,6 +221,7 @@ public sealed class GenaNotifier : IAsyncDisposable
         if (failures >= _options.MaxConsecutiveFailures)
         {
             _registry.TryRemove(subscription.Sid);
+            Forget(subscription.Sid);
             _log($"subscription {subscription.Sid} dropped after {failures} failed notifications ({reason})");
             return;
         }
@@ -220,8 +240,104 @@ public sealed class GenaNotifier : IAsyncDisposable
             await Task.Delay(50).ConfigureAwait(false);
         }
 
+        _pumps.Clear();
         _client.Dispose();
         _gate.Dispose();
         _cts.Dispose();
+    }
+
+    /// <summary>
+    /// Serialises the notifications of one subscription and keeps their SEQ monotonic.
+    /// </summary>
+    /// <remarks>
+    /// One pump task runs at a time. It drains the initial event first (SEQ 0), then the newest
+    /// pending state, and stops as soon as there is nothing left to send - a new enqueue restarts it.
+    /// A state that is superseded before it is sent is simply replaced, so a subscriber that was slow
+    /// to answer receives the current state instead of a queue of history.
+    /// </remarks>
+    private sealed class DeliveryPump(GenaNotifier owner, GenaSubscription subscription)
+    {
+        private readonly object _gate = new();
+        private string? _initial;
+        private string? _pending;
+        private bool _running;
+
+        public void EnqueueInitial(string body)
+        {
+            lock (_gate)
+            {
+                _initial ??= body;
+            }
+
+            Kick();
+        }
+
+        public void Enqueue(string body)
+        {
+            lock (_gate)
+            {
+                _pending = body;
+            }
+
+            Kick();
+        }
+
+        private void Kick()
+        {
+            lock (_gate)
+            {
+                if (_running)
+                {
+                    return;
+                }
+
+                _running = true;
+            }
+
+            _ = Task.Run(PumpAsync);
+        }
+
+        private async Task PumpAsync()
+        {
+            while (true)
+            {
+                string? body;
+                lock (_gate)
+                {
+                    if (_initial is not null)
+                    {
+                        body = _initial;
+                        _initial = null;
+                    }
+                    else if (_pending is not null)
+                    {
+                        body = _pending;
+                        _pending = null;
+                    }
+                    else
+                    {
+                        _running = false;
+                        return;
+                    }
+                }
+
+                // The subscription may have been removed (unsubscribe, expiry, failure budget) while
+                // this state was queued. Sending then would resurrect it on the client's side.
+                if (!owner._registry.TryGet(subscription.Sid, out _))
+                {
+                    owner.Forget(subscription.Sid);
+                    lock (_gate)
+                    {
+                        _running = false;
+                        _initial = null;
+                        _pending = null;
+                    }
+
+                    return;
+                }
+
+                await owner.DeliverAsync(subscription, body).ConfigureAwait(false);
+            }
+        }
     }
 }

@@ -32,6 +32,17 @@ public class DescriptionTests
         Assert.False(string.IsNullOrWhiteSpace(device.Element(Device + "manufacturer")!.Value));
         Assert.False(string.IsNullOrWhiteSpace(device.Element(Device + "modelName")!.Value));
         Assert.Equal("1", root.Element(Device + "specVersion")!.Element(Device + "major")!.Value);
+
+        // Casting clients build their device entry from a fixed field list; a missing element is not
+        // an XML error but can drop the device from the list entirely.
+        foreach (var required in new[] { "manufacturerURL", "modelURL", "serialNumber", "modelNumber", "modelDescription" })
+        {
+            Assert.False(
+                string.IsNullOrWhiteSpace(device.Element(Device + required)?.Value),
+                $"device description is missing {required}");
+        }
+
+        Assert.Equal("DMR-1.50", device.Element(UpnpNamespaces.Dlna + "X_DLNADOC")!.Value);
     }
 
     [Fact]
@@ -75,13 +86,19 @@ public class DescriptionTests
                      "SetAVTransportURI", "Play", "Pause", "Stop", "Seek",
                      "GetTransportInfo", "GetPositionInfo", "GetMediaInfo",
                      "GetDeviceCapabilities", "GetTransportSettings",
+                     "GetCurrentTransportActions", "SetPlayMode",
                  })
         {
             Assert.Contains(required, actions);
         }
 
-        Assert.DoesNotContain("Next", actions);
-        Assert.DoesNotContain("Previous", actions);
+        // Queue navigation is declared (and answered as a no-op): casting clients read the SCPD to
+        // decide which controls their remote UI may show, and an absent action is treated as
+        // "this device cannot do it" even though a SOAP call would have succeeded.
+        Assert.Contains("Next", actions);
+        Assert.Contains("Previous", actions);
+
+        // A queue the renderer cannot honour must not be advertised at all.
         Assert.DoesNotContain("SetNextAVTransportURI", actions);
 
         var play = document.Descendants(Service + "action")
@@ -106,11 +123,35 @@ public class DescriptionTests
         Assert.Contains("PAUSED_PLAYBACK", allowed);
         Assert.Contains("TRANSITIONING", allowed);
         Assert.Contains("STOPPED", allowed);
+        Assert.Contains("NO_MEDIA_PRESENT", allowed);
 
         // Every action argument must reference a declared state variable.
         var declared = variables.Keys.ToHashSet(StringComparer.Ordinal);
         var referenced = document.Descendants(Service + "relatedStateVariable").Select(e => e.Value);
         Assert.All(referenced, name => Assert.Contains(name, declared));
+    }
+
+    [Fact]
+    public void Scpds_are_serialized_without_namespace_prefixes()
+    {
+        // Clients that walk the document by tag name - rather than by namespace URI - find no
+        // actions at all when the root is written as <s:scpd>. Discovery then succeeds while the
+        // device silently drops out of every cast menu.
+        foreach (var scpd in new[]
+                 {
+                     ScpdBuilder.BuildAvTransport(),
+                     ScpdBuilder.BuildConnectionManager(),
+                     ScpdBuilder.BuildRenderingControl(),
+                 })
+        {
+            var document = XDocument.Parse(scpd);
+            Assert.Equal(Service, document.Root!.Name.Namespace);
+
+            // The namespace must be declared as the default one and nothing else: a prefix on the
+            // root element is what makes tag-name lookups fail.
+            Assert.Contains("<scpd xmlns=\"urn:schemas-upnp-org:service-1-0\">", scpd, StringComparison.Ordinal);
+            Assert.DoesNotContain("<s:", scpd, StringComparison.Ordinal);
+        }
     }
 
     [Fact]
