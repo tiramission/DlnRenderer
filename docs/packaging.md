@@ -87,7 +87,8 @@ SCM 托管的服务运行在 **session 0**，那里没有用户桌面，GPU 交�
   的框架依赖；缺失时 `Add-AppxPackage` 会失败而不是装完再崩。干净机器上的行为**未验证**。
 - **服务不再开机即起**，只在用户登录后（启用开机启动时）或手动打开 UI 后可用。
 - **MSIX 下"开机启动"未做重启实测。** `StartupTask` 的 API 路径编译通过，但没有真正注销/重启验证。
-- **正式代码签名。** 当前是 `winapp cert generate` 的 dev 证书；分发给其他机器需要 CA 证书（阶段 F5）。
+- **正式代码签名。** 当前是**固定在仓库中**的 dev 证书（`tools/package/devcert.*`，
+  指纹 `8781E2D1…`，有效期至 2027-10-22）；分发给其他机器仍需 CA 证书（阶段 F5）。
 - 只测了 x64；没有 ARM64/x86 的 libmpv 构建（见 [licenses.md](licenses.md)）。
 
 ## 6. 用户级 MSIX 验证记录（2026-10-22）
@@ -131,7 +132,7 @@ gh workflow run release.yml -f version=0.1.0 -f publish=true -f prerelease=true
 2. 预热打包工具链：`winapp tool -- makeappx /?` 与 `signtool /?`，**按输出横幅判断**而不是退出码
    （`makeappx /?` 即使成功也返回 1）。缺 Build Tools 时 winapp 会自行下载。
 3. `fetch-libmpv.ps1 -Download`（双哈希）与 `choco install 7zip`。
-4. `winapp cert generate`：**每次运行新生成** dev 证书，Publisher 取自清单。
+4. 使用**仓库内固定的** dev 证书 `tools/package/devcert.pfx`：校验它与 `devcert.cer` 指纹一致、且未临近过期，不一致或即将过期直接失败。不会再生成新证书。
 5. `build-dist.ps1` → `build-msix.ps1 -Cert <本次证书>` → `hash-release.ps1`。
 6. 组装资产 + 导出 `.cer` + 写 `SHA256SUMS-assets.txt` + 生成发布说明。
 7. `gh release create`。
@@ -142,12 +143,22 @@ gh workflow run release.yml -f version=0.1.0 -f publish=true -f prerelease=true
 | --- | --- |
 | `DlnRenderer-<ver>-win-x64.zip` | 绿色包（含 `install.ps1`） |
 | `DlnRenderer-<ver>-win-x64.msix` | 用户级 MSIX |
-| `DlnRenderer-dev.cer` | **公钥证书**，用户装包前需一次性信任 |
+| `DlnRenderer-dev.cer` | **公钥证书**（与仓库中的 `tools/package/devcert.cer` 逐字节相同），用户只需信任一次，后续版本无需重做 |
 | `SHA256SUMS-assets.txt` | 上面每个资产的哈希 |
 | `SHA256SUMS-portable.txt` | 绿色包内 86 个文件的逐文件哈希 |
 | `release-manifest.json` | 版本、commit、libmpv 指纹、文件清单 |
 
-`.pfx`（含私钥）**不发布**，只在 workflow 的临时目录里存在。发布的 `.cer` 只能验证签名，不能签名。
+`.pfx`（含私钥）不挂在 Release 上，但**它在公开仓库里**（`tools/package/devcert.pfx`，密码 `password`）。
+这是为了固定签名身份而做的取舍，后果必须说清楚：
+
+- **好处**：MSIX 升级要求签名身份不变且证书已受信任；固定证书让用户只信任一次，`.cer` 在每次
+  发布中字节一致（哈希也不变）。
+- **代价**：任何拿到仓库的人都能签出 Windows 会显示为 `CN=AppPublisher` 的包。因此这个证书
+  **只证明身份标签，不证明来源**。验证来源请用 `SHA256SUMS-assets.txt` 里的哈希，或 GitHub
+  Release 页面的 asset digest。
+- **期限**：证书有效期至 **2027-10-22**。workflow 在剩余不足 14 天时会直接失败，提醒续期
+  （`-ForceCert` 重新生成后需同步导出新的 `.cer`，并接受旧安装无法升级）。
+- **正式发布**仍应换成 CA 证书；届时 Publisher 会变化，属于一次性的破坏性切换，需要写进升级说明。
 
 ### 7.4 用户如何装（dev 证书）
 

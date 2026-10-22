@@ -1,3 +1,13 @@
-
-# Development certificate
-devcert.pfx
+# The development certificate is COMMITTED on purpose (devcert.pfx + devcert.cer), which is why
+# the repository-wide "*.pfx" rule has to be overridden here.
+#
+# MSIX upgrades require an identical Publisher AND a package signed by a certificate the machine
+# already trusts. A certificate regenerated per build would therefore break every existing install
+# on the next release, and would change the .cer users were told to trust. One fixed identity is
+# the correct behaviour.
+#
+# The consequence is deliberate and must be stated wherever it matters: this private key is public.
+# Anyone can sign a package that Windows will call CN=AppPublisher. It authenticates the identity,
+# not the publisher, and it is no substitute for a CA certificate (docs/packaging.md §5).
+# Never treat a package signed with it as proof of official DlnRenderer provenance.
+!devcert.pfx

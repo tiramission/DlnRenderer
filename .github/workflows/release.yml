@@ -124,18 +124,41 @@ jobs:
           Assert-Tool -Name 'makeappx' -Marker 'MakeAppx'
           Assert-Tool -Name 'signtool' -Marker 'signtool'
 
-      # The MSIX must be signed by a certificate the user trusts, and this build has no CA
-      # certificate. A dev certificate is generated per run with the Publisher taken from the
-      # manifest; both the .pfx and a public .cer are published so the package can be installed
-      # without owning the signing key. A CA certificate replaces this before a wider release
-      # (docs/packaging.md §5).
-      - name: Generate the signing certificate
+      # The signing certificate is COMMITTED (tools/package/devcert.pfx) rather than generated per
+      # run. Regenerating it changed the signer on every release, which breaks what MSIX needs: an
+      # upgrade must be signed by a certificate the machine already trusts, and the .cer users
+      # trusted for 0.1.0 would not match 0.2.0. One fixed identity keeps upgrades working and
+      # keeps the published .cer meaningful.
+      #
+      # This certificate's private key is public in the repository. That is stated in the release
+      # notes: it marks the package as "dev-signed DlnRenderer", not as proof of provenance. A CA
+      # certificate replaces it before a wider release (docs/packaging.md §5).
+      - name: Verify the committed signing certificate
         shell: pwsh
         run: |
-          $pfx = Join-Path $env:RUNNER_TEMP 'devcert.pfx'
-          winapp cert generate --manifest src/DlnRenderer.App/Package.appxmanifest --output $pfx --password password
-          if (-not (Test-Path $pfx)) { throw 'certificate not generated' }
+          $pfx = Join-Path $PWD 'tools/package/devcert.pfx'
+          $cer = Join-Path $PWD 'tools/package/devcert.cer'
+          foreach ($f in @($pfx, $cer)) {
+              if (-not (Test-Path $f)) { throw "missing signing file: $f" }
+          }
           winapp cert info $pfx
+
+          # The .pfx and the published .cer must be the same identity, or users are told to trust
+          # a certificate that cannot validate the package.
+          $plain = ConvertTo-SecureString 'password' -AsPlainText -Force
+          $private = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($pfx, $plain)
+          $public  = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($cer)
+          if ($private.Thumbprint -ne $public.Thumbprint) {
+              throw "devcert.pfx ($($private.Thumbprint)) and devcert.cer ($($public.Thumbprint)) are different certificates."
+          }
+
+          # Windows rejects a package signed by an expired certificate, and this one has a one-year
+          # life. Failing here is clearer than a signtool error during packaging.
+          if ($private.NotAfter -lt (Get-Date).AddDays(14)) {
+              throw "the signing certificate expires $($private.NotAfter.ToString('u')). Renew it (see docs/packaging.md §5) before releasing."
+          }
+
+          Write-Host "signing certificate: $($private.Thumbprint), valid to $($private.NotAfter.ToString('u'))"
           "PFX=$pfx" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Build the portable distribution
@@ -167,17 +190,30 @@ jobs:
 
       # The public certificate ships next to the package: a sideloaded MSIX needs its publisher
       # trusted first, and the user has no other way to learn which certificate to trust.
-      - name: Export the public certificate
+      #
+      # It is copied from the repository rather than re-exported, so its bytes - and therefore its
+      # hash in SHA256SUMS-assets.txt - are identical in every release. A user who trusted it for
+      # one version should see the same file the next time, not a new one.
+      - name: Copy the public certificate into the assets
         shell: pwsh
         run: |
-          $plain = ConvertTo-SecureString 'password' -AsPlainText -Force
-          $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($env:PFX, $plain)
-          $cerPath = Join-Path 'dist/assets' 'DlnRenderer-dev.cer'
-          [IO.File]::WriteAllBytes($cerPath, $cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert))
-          if (-not (Test-Path $cerPath)) { throw 'certificate export produced no file' }
+          $source = Join-Path $PWD 'tools/package/devcert.cer'
+          $target = Join-Path $PWD 'dist/assets/DlnRenderer-dev.cer'
+          Copy-Item -LiteralPath $source -Destination $target -Force
+
+          $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($target)
           Write-Host "thumbprint: $($cert.Thumbprint)"
           Write-Host "subject:    $($cert.Subject)"
           Write-Host "expires:    $($cert.NotAfter.ToString('u'))"
+
+          # Prove the published .cer is the one that actually signed this package, rather than
+          # trusting that the two file paths stayed in sync.
+          $package = Join-Path $PWD 'dist/msix/DlnRenderer-x64.msix'
+          $signature = Get-AuthenticodeSignature -LiteralPath $package
+          if ($signature.SignerCertificate.Thumbprint -ne $cert.Thumbprint) {
+              throw "the package is signed by $($signature.SignerCertificate.Thumbprint), but the published .cer is $($cert.Thumbprint)."
+          }
+          Write-Host 'published .cer matches the package signer'
 
       - name: Checksums for the release assets
         shell: pwsh
@@ -228,8 +264,14 @@ jobs:
           Import-Certificate -FilePath DlnRenderer-dev.cer -CertStoreLocation Cert:\LocalMachine\Root
           ````
 
-          That certificate is included here as a convenience for testing; trusting it says you
-          trust *this* publisher identity on *this* machine. Then install without elevation:
+          **Read this before trusting it.** The private key for that certificate is committed in
+          the public repository, so anyone can produce a package Windows will label
+          ``CN=AppPublisher``. Trusting it therefore does not prove a package came from this
+          project — check the SHA-256 in ``SHA256SUMS-assets.txt`` (or this release page) for that.
+          The certificate is stable across releases on purpose, so you only trust it once and
+          upgrades keep working.
+
+          Then install without elevation:
 
           ````
           Add-AppxPackage -Path DlnRenderer-${{ inputs.version }}-win-x64.msix

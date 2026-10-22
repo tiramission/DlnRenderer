@@ -67,7 +67,9 @@ pwsh tools/package/build-msix.ps1   # MSIX → dist/msix/DlnRenderer-x64.msix
 
 两条渠道共用同一套发布产物。MSIX 需要 `winapp` CLI 与 Windows Kits 的 `makeappx.exe`
 （用于打包后解包回验）。安装 MSIX 前需一次性信任 dev 证书（需管理员）：
-`winapp cert install tools/package/devcert.pfx`。渠道差异见 [docs/packaging.md](docs/packaging.md)。
+`winapp cert install tools/package/devcert.pfx` 或用 Release 里的 `DlnRenderer-dev.cer`。证书在仓库中固定，
+**只信任一次即可**，后续版本升级无需重做；但它的私钥是公开的，所以只代表身份标签，
+**不代表来源**——来源请核对 `SHA256SUMS-assets.txt`。渠道差异见 [docs/packaging.md](docs/packaging.md)。
 
 ## 尚未实现
 

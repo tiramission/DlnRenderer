@@ -83,28 +83,36 @@ if (-not (Test-Path -LiteralPath $manifest)) { throw "missing manifest: $manifes
 # The Publisher in the manifest and the certificate subject must match, or signtool refuses
 # the package. winapp infers the Publisher from the manifest when --manifest is given.
 #
-# The development certificate is reused when it already exists: regenerating it would change the
-# signature identity and force a reinstall of every package built earlier (MSIX upgrades require
-# the same Publisher + Name). Pass -ForceCert to replace it deliberately.
+# The development certificate is committed (tools/package/devcert.pfx), so the default path finds
+# it. That is deliberate: a new signature identity on every build breaks upgrades - MSIX requires
+# the same Publisher + Name and a certificate the machine already trusts - and it would change the
+# .cer users are told to trust.
+#
+# A missing certificate is therefore an error, not a signal to mint a new one. Minting silently is
+# how the per-run identity happened in the first place. `-ForceCert` exists for the deliberate case
+# (renewing an expiring certificate), and it replaces the committed files on purpose.
 $certPath = $Cert
 if ([string]::IsNullOrWhiteSpace($certPath)) {
     $certPath = Join-Path $here 'devcert.pfx'
-    if ((Test-Path -LiteralPath $certPath) -and -not $ForceCert) {
-        Write-Step "reusing the existing development certificate $certPath"
-    }
-    else {
+    if ($ForceCert -or -not (Test-Path -LiteralPath $certPath)) {
+        if (-not $ForceCert) {
+            throw "missing $certPath. It is committed to the repository; restore it rather than generating a new identity, which would break upgrades."
+        }
         if (Test-Path -LiteralPath $certPath) { Remove-Item -LiteralPath $certPath -Force }
-        Write-Step "generating a development certificate (Publisher from the manifest)"
+        Write-Step "regenerating the development certificate (Publisher from the manifest)"
         & winapp cert generate --manifest $manifest --output $certPath --password $CertPassword
         if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) { throw "cert generate failed" }
         if (-not (Test-Path -LiteralPath $certPath)) { throw "no certificate produced at $certPath" }
-        Write-Host "  certificate generated; trust it once per machine with: winapp cert install $certPath" -ForegroundColor Green
+        Write-Warning "a NEW signing identity was created: existing installs will not upgrade. Export the matching .cer into tools/package/ as well."
+    }
+    else {
+        Write-Step "using the committed development certificate $certPath"
     }
 }
 else {
     Write-Step "using existing certificate $certPath"
-    & winapp cert info $certPath
 }
+& winapp cert info $certPath
 
 # --- 2. Publish ---------------------------------------------------------------------
 # -p:PublishTrimmed=false: the App project trims in non-Debug configurations, and trimming
