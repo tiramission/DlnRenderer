@@ -171,9 +171,9 @@ public sealed class VideoPresenter : IAsyncDisposable, IMonitorEventsSink
     /// </summary>
     /// <remarks>
     /// The mode, the host window and the reserved rectangle travel together because they are only
-    /// meaningful together: an embedded target with no host must fall back to fullscreen, and a
-    /// rectangle that changed while the overlay was hidden must be applied on the next show rather
-    /// than now. Nothing is applied until the window is visible again.
+    /// meaningful together: an embedded target with no host now hides rather than covering the
+    /// screen, and a rectangle that changed while the overlay was hidden must be applied on the next
+    /// show rather than now. Nothing is applied until the window is visible again.
     /// </remarks>
     public void SetTarget(VideoTarget target)
     {

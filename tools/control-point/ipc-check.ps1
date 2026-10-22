@@ -4,6 +4,11 @@ $ErrorActionPreference = "Stop"
 
 $pipeName = "DlnRenderer.Service.v1"
 
+# Must match IpcProtocol.Version (src/DlnRenderer.Core/Ipc/IpcProtocol.cs). The service refuses
+# requests that carry a different version, so a stale constant here makes every command fail with
+# a version error that looks like a broken renderer.
+$protocolVersion = "1.1"
+
 function Read-Message {
     param([System.IO.Stream]$Stream, [int]$TimeoutMs = 5000)
 
@@ -53,7 +58,7 @@ function Invoke-Command {
     param([string]$Command, [double]$Seek, [int]$VolumeMsg)
 
     $id = [Guid]::NewGuid().ToString("N")
-    $message = @{ type = "request"; version = "1.0"; requestId = $id; command = $Command }
+    $message = @{ type = "request"; version = $protocolVersion; requestId = $id; command = $Command }
     if ($Seek -gt 0) { $message.seekSeconds = $Seek }
     if ($VolumeMsg -ge 0) { $message.volume = $VolumeMsg }
     Send-Message -Stream $pipe -Message $message

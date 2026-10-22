@@ -57,7 +57,7 @@ SCM 托管的服务运行在 **session 0**，那里没有用户桌面，GPU 交�
 | `tools/package/build-msix.ps1` | MSIX：先发布 Service 再发布 App 到同一暂存目录 → 复制 libmpv 与 Assets → `winapp package` + 签名 → **解包回验** |
 | `tools/package/verify-service.ps1` | MSIX 体检：包已装、**无 SCM 服务**、清单含运行时依赖、UI 启动且不崩溃、服务在**用户会话**（非 session 0）、`description.xml` 可达 |
 | `tools/package/install.ps1` / `uninstall.ps1` | 绿色包安装/卸载 |
-| `tools/package/stop-service.ps1` | 通过 IPC `Shutdown` 干净停止服务 |
+| `tools/package/stop-service.ps1` | 通过 IPC `Shutdown` 干净停止服务。**按协议版本列表依次尝试**：它要停的往往是尚未升级的旧服务，而版本不匹配时服务端只回错误帧、不断连，所以同一条管道上可以试多个版本。升版时同步脚本里的版本列表 |
 | `tools/package/firewall-rules.ps1` | UDP 1900（SSDP）+ TCP 18090（描述/SOAP/GENA），限定专用/域网络 |
 
 `build-msix.ps1` 的解包回验会断言：清单**没有** `windows.service` / `packagedServices` /
@@ -72,7 +72,8 @@ SCM 托管的服务运行在 **session 0**，那里没有用户桌面，GPU 交�
 | 开机启动 | HKCU Run | `windows.startupTask`（设置页开关；用户也可在"设置 → 应用 → 启动"改） |
 | 安装 | `install.ps1`（管理员 PowerShell） | `Add-AppxPackage`（当前用户） |
 | 安装位置 | `%ProgramFiles%\DlnRenderer` | `%ProgramFiles%\WindowsApps\...`（受保护，用户不可写） |
-| 升级 | 覆盖文件 | 提高版本号后 `Add-AppxPackage`（**同版本号内容不同会被拒绝**，见 §5） |
+| 升级 | 覆盖文件；脚本先用 `stop-service.ps1` 通过 IPC 停掉正在跑的服务（**无孤儿进程**） | 提高版本号后 `Add-AppxPackage`（**同版本号内容不同会被拒绝**，见 §5）。**没有提权钩子停旧服务进程** |
+| 升级后 | 新 UI 拉起新服务，若失败需在设置页"重启后台服务" | 同左，但旧进程可能残留，见 §5 |
 | 数据目录 | `%LOCALAPPDATA%\DlnRenderer` | `%LOCALAPPDATA%\DlnRenderer`（未被虚拟化） |
 | 卸载 | `uninstall.ps1` | "设置 → 应用 → 卸载" |
 
@@ -86,6 +87,11 @@ SCM 托管的服务运行在 **session 0**，那里没有用户桌面，GPU 交�
 - **依赖的 Windows App Runtime 必须已安装。** 清单声明了对 `Microsoft.WindowsAppRuntime.2 ≥ 2.5.1`
   的框架依赖；缺失时 `Add-AppxPackage` 会失败而不是装完再崩。干净机器上的行为**未验证**。
 - **服务不再开机即起**，只在用户登录后（启用开机启动时）或手动打开 UI 后可用。
+- **UI 与后台服务必须同版本，升级后要重启服务。** 两者是独立可执行文件：旧服务会静默忽略它不
+  认识的 IPC 字段（例如 `VideoTarget.Enabled`），线协议版本不匹配时则直接拒绝请求——表现为"修好
+  的缺陷又出现了"。绿色包由 `install.ps1` 先停旧进程再覆盖，基本能自愈；**MSIX 渠道没有停服
+  钩子**，跨协议版本升级后旧进程会残留，界面会提示"版本不一致"，需用户在设置页重启后台服务。
+  契约与排查见 [`ipc-protocol.md`](ipc-protocol.md) §3、§6。
 - **MSIX 下"开机启动"未做重启实测。** `StartupTask` 的 API 路径编译通过，但没有真正注销/重启验证。
 - **正式代码签名。** 当前是**固定在仓库中**的 dev 证书（`tools/package/devcert.*`，
   指纹 `8781E2D1…`，有效期至 2027-10-22）；分发给其他机器仍需 CA 证书（阶段 F5）。
@@ -131,6 +137,12 @@ gh workflow run release.yml -f version=0.2.1 -f publish=true -f prerelease=true
 
 发正式版前必须把 `Directory.Build.props` 的 `<Version>` 与 `Package.appxmanifest` 的
 `Identity Version`（三位版本 + `.0`）一起改上去，否则 workflow 第一步就失败。
+
+**若本版本包含 IPC 线协议版本变更**（`IpcProtocol.Version`），还要：
+
+- 同步 `tools/control-point/ipc-check.ps1` 的 `$protocolVersion` 与 `tools/package/stop-service.ps1`
+  的版本列表——两者自己拼消息，过期会让脚本命令全被拒绝；
+- 在 Release 说明里写明"升级后需重启后台服务"，因为旧进程不会自己退出（§5）。
 
 ### 7.2 步骤
 

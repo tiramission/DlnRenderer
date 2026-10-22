@@ -117,8 +117,11 @@ public sealed partial class MainPage : Page
         _endOfCastTimer?.Stop();
 
         // The rectangle this page reserved is gone. Suspending rather than removing the target keeps
-        // the cast where it is: without a host the renderer would fall back to its fullscreen
-        // overlay, and clicking the settings icon would throw the film onto the whole screen.
+        // the cast where it is: the audio must not stop because the user opened the settings page.
+        //
+        // The authoritative suspend is sent from MainWindow's navigation handler, before the new page
+        // appears. This one only has to agree with it - sending it twice is harmless, relying on the
+        // framework's unload/load ordering was not.
         _ = SendVideoTargetAsync(new VideoTarget
         {
             Mode = App.Settings.DisplayMode,

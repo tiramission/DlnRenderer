@@ -49,6 +49,7 @@ public sealed class MainPageViewModel : ObservableObject, IDisposable
     private bool _isPlaying;
     private bool _showsVideo;
     private bool _isConnected;
+    private bool _serviceBuildMismatch;
     private ImageSource? _coverImage;
     private Uri? _coverUri;
 
@@ -58,7 +59,12 @@ public sealed class MainPageViewModel : ObservableObject, IDisposable
         _client = App.Client;
         _client.SnapshotChanged += OnSnapshotChanged;
         _client.Faulted += OnClientFaulted;
+        _client.RequestRejected += OnRequestRejected;
     }
+
+    /// <summary>A refused command is shown, but it does not change the connection state.</summary>
+    private void OnRequestRejected(object? sender, string reason)
+        => _dispatcher.TryEnqueue(() => ReportError(reason));
 
     public string ServiceText { get => _serviceText; private set => SetProperty(ref _serviceText, value); }
 
@@ -246,19 +252,42 @@ public sealed class MainPageViewModel : ObservableObject, IDisposable
     private void ApplyConnection(bool connected)
     {
         IsConnected = connected;
+        ServiceBuildMismatch = false;
         ServiceText = connected ? "后台服务：已连接" : "后台服务：未连接";
         OnPropertyChanged(nameof(ServiceSeverity));
     }
 
-    /// <summary>Disconnected is a warning rather than neutral information.</summary>
-    public InfoBarSeverity ServiceSeverity => IsConnected ? InfoBarSeverity.Informational : InfoBarSeverity.Warning;
+    /// <summary>
+    /// True when the service reports a build other than the UI's, or a build old enough not to
+    /// report one at all.
+    /// </summary>
+    /// <remarks>
+    /// The two are separate executables, and a stale service silently ignores message fields it does
+    /// not know: a fixed bug then looks unfixed, or behaves differently from what the code says.
+    /// Saying so beats leaving the user to debug a build mismatch as if it were a defect.
+    /// </remarks>
+    public bool ServiceBuildMismatch { get => _serviceBuildMismatch; private set => SetProperty(ref _serviceBuildMismatch, value); }
+
+    /// <summary>Disconnected, or talking to a different build, is a warning rather than neutral information.</summary>
+    public InfoBarSeverity ServiceSeverity => IsConnected && !_serviceBuildMismatch
+        ? InfoBarSeverity.Informational
+        : InfoBarSeverity.Warning;
 
     private void ApplySnapshot(RendererSnapshot snapshot)
     {
         IsConnected = true;
-        ServiceText = snapshot.DiscoveryActive
-            ? $"后台服务：已连接 · 局域网发现已开启（{snapshot.DeviceName ?? "DlnRenderer"}）"
-            : $"后台服务：已连接 · 发现未开启（{snapshot.DeviceName ?? "DlnRenderer"}）";
+
+        var uiBuild = typeof(MainPageViewModel).Assembly.GetName().Version?.ToString(3);
+        ServiceBuildMismatch = snapshot.ServiceBuild is null
+            || (uiBuild is not null && snapshot.ServiceBuild != uiBuild);
+
+        ServiceText = _serviceBuildMismatch
+            ? $"后台服务：版本不一致（服务 {snapshot.ServiceBuild ?? "旧版本"} / 界面 {uiBuild ?? "?"}）· 请在设置页重启后台服务"
+            : snapshot.DiscoveryActive
+                ? $"后台服务：已连接 · 局域网发现已开启（{snapshot.DeviceName ?? "DlnRenderer"}）"
+                : $"后台服务：已连接 · 发现未开启（{snapshot.DeviceName ?? "DlnRenderer"}）";
+
+        OnPropertyChanged(nameof(ServiceSeverity));
 
         var status = snapshot.Playback;
         var media = status.Media;
@@ -375,6 +404,7 @@ public sealed class MainPageViewModel : ObservableObject, IDisposable
     {
         _disposed = true;
         _client.SnapshotChanged -= OnSnapshotChanged;
+        _client.RequestRejected -= OnRequestRejected;
         _client.Faulted -= OnClientFaulted;
 
         // Cancelled but not disposed: an in-flight connection attempt may still read the token, and

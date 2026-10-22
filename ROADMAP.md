@@ -200,7 +200,9 @@ DlnRenderer 是一个 **DLNA Media Renderer（DMR）**：它让手机、平板�
 
 | 项 | 状态 | 说明 |
 | --- | --- | --- |
-| 版本化协议 + 请求 ID | 已实现且已验证 | `IpcProtocol` |
+| 版本化协议 + 请求 ID | 已实现且已验证 | `IpcProtocol`；线协议 1.1，版本不匹配会被**拒绝**（不是断连），快照带 `ServiceBuild` 供界面自检 |
+| 命令被拒 vs 断连 | 已实现 | `ServiceClient.RequestRejected` 与 `Faulted` 分开：被拒不触发重连循环 |
+| IPC 协议文档 | 已实现 | `docs/ipc-protocol.md` |
 | 仅当前用户可访问 | 已实现且已验证 | `PipeOptions.CurrentUserOnly` |
 | 消息大小上限 | 已实现且已验证 | 64 KiB |
 | 断线检测与重连 | 部分实现 | `HandleDisconnect`，UI 无自动重连计时器 |
@@ -212,6 +214,8 @@ DlnRenderer 是一个 **DLNA Media Renderer（DMR）**：它让手机、平板�
 | 项 | 状态 | 说明 |
 | --- | --- | --- |
 | 服务日志（文件） | 已实现且已验证 | `ServiceLog.cs`，`%LOCALAPPDATA%\DlnRenderer\logs` |
+| 显示目标诊断日志 | 已实现 | 每次 `SetVideoTarget` 记 `video target: mode=… enabled=… host=… rect=…`；启动横幅带 build 号 |
+| 版本自检 | 已实现 | 快照 `ServiceBuild` 与界面版本比对，不一致时状态栏降级为警告 |
 | 日志轮换 | 已实现且已验证 | 按天保留 7 天；7 个单元测试 + 实测清理（A5） |
 | mpv 日志转发 | 已实现且已验证 | `Program.cs` 订阅 `LogMessage` |
 | UI 诊断日志 | 已实现但未充分验证 | `DiagnosticsLog.cs` |

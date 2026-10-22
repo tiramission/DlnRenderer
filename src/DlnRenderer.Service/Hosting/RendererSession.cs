@@ -172,8 +172,13 @@ public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsy
             DiscoveryActive = DiscoveryActive,
             ControlUrl = ControlUrl,
             LastError = error,
+            ServiceBuild = BuildVersion,
         };
     }
+
+    /// <summary>Build of the running service, so the UI can tell a stale service from a broken one.</summary>
+    private static readonly string BuildVersion =
+        typeof(RendererSession).Assembly.GetName().Version?.ToString(3) ?? "unknown";
 
     public async Task LoadAsync(Uri uri, string? metadataXml, CancellationToken cancellationToken)
     {
@@ -680,8 +685,9 @@ public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsy
 
         if (show)
         {
-            // Mode-aware: the presenter embeds into the UI window when the target says so, and
-            // falls back to fullscreen when it cannot.
+            // Mode-aware: the presenter embeds into the UI window when the target says so. When it
+            // cannot embed it hides - a suspended target or one the UI has not filled in yet must
+            // not turn into a fullscreen overlay the user did not ask for.
             _presenter.Show();
             _log($"video presenter {_presenter.PresentationState} on monitor 0x{_presenter.MonitorHandle:X}");
         }

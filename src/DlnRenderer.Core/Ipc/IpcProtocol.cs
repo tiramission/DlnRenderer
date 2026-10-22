@@ -10,7 +10,17 @@ namespace DlnRenderer.Core.Ipc;
 public static class IpcProtocol
 {
     public const string PipeName = "DlnRenderer.Service.v1";
-    public const string Version = "1.0";
+
+    /// <summary>
+    /// Wire-protocol version. Bumped whenever a message field changes meaning.
+    /// </summary>
+    /// <remarks>
+    /// The two executables are separate processes, and a service built from older source simply
+    /// ignores fields it does not know: a request that says "suspend the picture" lands as "no host",
+    /// which the old service answers with a fullscreen overlay. That is not a bug to debug twice -
+    /// it is a stale binary, so the mismatch is refused loudly instead.
+    /// </remarks>
+    public const string Version = "1.1";
 
     /// <summary>Hard cap on a single framed message; protects both sides from unbounded reads.</summary>
     public const int MaxMessageBytes = 64 * 1024;
@@ -94,10 +104,11 @@ public sealed record VideoTarget
     /// False while the UI has nowhere to show the picture - the player page is not on screen.
     /// </summary>
     /// <remarks>
-    /// Distinct from "no host": a host-less embedded target falls back to fullscreen, which is right
-    /// when the UI is missing but wrong when the user simply opened the settings page. Suspending
-    /// hides the picture and leaves the cast running, so navigating away does not throw a film onto
-    /// the whole screen.
+    /// Distinct from "no host". Embedded mode never falls back to the fullscreen overlay, so both
+    /// states now hide the picture - the difference is what happens when the UI comes back: a
+    /// suspended target is a deliberate pause that resumes on navigation, a host-less one is a target
+    /// the UI has not filled in yet. Either way the cast keeps running and the audio never stops,
+    /// which is the point: navigating away must not throw a film onto the whole screen.
     /// </remarks>
     public bool Enabled { get; init; } = true;
 
@@ -139,6 +150,17 @@ public sealed record RendererSnapshot
     public string? ControlUrl { get; init; }
 
     public string? LastError { get; init; }
+
+    /// <summary>
+    /// Build of the service that produced this snapshot, or null when the service predates the field.
+    /// </summary>
+    /// <remarks>
+    /// The UI and the service are separate executables, and a stale service silently ignores message
+    /// fields it does not know - a fixed bug then looks unfixed, or worse, behaves differently from
+    /// what the code says. Reporting the build lets the UI say "this service is old" instead of
+    /// leaving both sides to guess.
+    /// </remarks>
+    public string? ServiceBuild { get; init; }
 }
 
 /// <summary>

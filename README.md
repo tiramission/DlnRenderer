@@ -109,6 +109,7 @@ pwsh tools/package/build-msix.ps1   # MSIX → dist/msix/DlnRenderer-x64.msix
 | **播放队列** | 单媒体模型，`NextURI` 恒为空 |
 | **网络接口变化的真实拔插验证** | 已监听 `NetworkAddressChanged` 并增量增删组播成员（单元测试覆盖），但没有真实拔插网线/切换 Wi-Fi 的验证记录 |
 | **MSIX 渠道的防火墙入站规则** | 清单能力不创建防火墙规则，用户级安装也没有提权钩子；需手动运行 `tools/package/firewall-rules.ps1`，UI 引导未实现 |
+| **升级后需重启后台服务** | 界面与后台服务是两个可执行文件，必须同版本：旧服务会忽略新字段、拒绝新版号，表现为"修好的问题又出现"。升级后若界面提示"版本不一致"，在设置页点"重启后台服务"（见 [docs/ipc-protocol.md](docs/ipc-protocol.md) §6） |
 
 ## 已知限制
 

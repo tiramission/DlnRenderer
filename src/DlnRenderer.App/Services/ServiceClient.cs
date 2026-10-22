@@ -48,6 +48,15 @@ public sealed class ServiceClient : IAsyncDisposable
     public event EventHandler<string>? Faulted;
 
     /// <summary>
+    /// Raised when the service answers a request with an error. The connection stays up.
+    /// </summary>
+    /// <remarks>
+    /// Separate from <see cref="Faulted"/>: a refused command is not a dropped pipe, and treating it
+    /// as one would start a reconnect loop over a request the user can simply retry.
+    /// </remarks>
+    public event EventHandler<string>? RequestRejected;
+
+    /// <summary>
     /// Connects to the service, starting it if it is not running. Returns false when the service
     /// could not be reached; <paramref name="error"/> then carries a user-readable reason.
     /// </summary>
@@ -234,6 +243,15 @@ public sealed class ServiceClient : IAsyncDisposable
                     Snapshot = snapshot;
                     SnapshotChanged?.Invoke(this, snapshot);
                 }
+
+                if (message.Type == IpcMessageTypes.Response
+                    && message.Success == false
+                    && !string.IsNullOrWhiteSpace(message.Error))
+                {
+                    // Not a disconnect: the service answered, it just refused. Staying silent here is
+                    // how a protocol mismatch turned into "the fix did nothing".
+                    RequestRejected?.Invoke(this, DescribeRejection(message.Error!));
+                }
             }
 
             HandleDisconnect("后台服务已断开连接。");
@@ -246,6 +264,18 @@ public sealed class ServiceClient : IAsyncDisposable
             HandleDisconnect($"与后台服务的连接已中断：{ex.Message}");
         }
     }
+
+    /// <summary>
+    /// Turns a refusal into something the user can act on.
+    /// </summary>
+    /// <remarks>
+    /// A version mismatch is the one rejection worth translating: it means the service is a different
+    /// build, and no amount of retrying will help until it is restarted.
+    /// </remarks>
+    private static string DescribeRejection(string error)
+        => error.Contains("protocol version", StringComparison.OrdinalIgnoreCase)
+            ? $"后台服务版本不匹配（{error}）。请在设置页重启后台服务，或退出应用后重新启动。"
+            : error;
 
     private void HandleDisconnect(string reason)
     {

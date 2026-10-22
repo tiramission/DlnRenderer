@@ -67,25 +67,42 @@ function Read-Message([System.IO.Stream]$Stream, [int]$ReadTimeoutMs = 5000) {
     return [System.Text.Encoding]::UTF8.GetString($payload) | ConvertFrom-Json
 }
 
-$message = @{
-    type      = 'request'
-    version   = '1.0'
-    requestId = [Guid]::NewGuid().ToString('N')
-    command   = 'Shutdown'
-}
+# The newest first, then the ones a still-running older build would accept. Upgrades stop whatever
+# is already installed - usually an older service - and a service refuses a request whose wire
+# version it does not recognise while keeping the connection open, so each version can be tried on
+# the same pipe. Keep in sync with IpcProtocol.Version (src/DlnRenderer.Core/Ipc/IpcProtocol.cs).
+$protocolVersions = @('1.1', '1.0')
 
+$stopped = $false
 try {
-    Send-Message $pipe $message
-    $response = Read-Message -Stream $pipe -ReadTimeoutMs 5000
-    if ($null -eq $response) {
-        # The service closes the pipe as it exits; no response frame is still a successful stop.
-        Write-Host "service closed the connection (shutting down)" -ForegroundColor Green
+    foreach ($version in $protocolVersions) {
+        $message = @{
+            type      = 'request'
+            version   = $version
+            requestId = [Guid]::NewGuid().ToString('N')
+            command   = 'Shutdown'
+        }
+
+        Send-Message $pipe $message
+        $response = Read-Message -Stream $pipe -ReadTimeoutMs 5000
+        if ($null -eq $response) {
+            # The service closes the pipe as it exits; no response frame is still a successful stop.
+            Write-Host "service closed the connection (shutting down)" -ForegroundColor Green
+            $stopped = $true
+            break
+        }
+
+        if ($response.success -eq $true) {
+            Write-Host "service acknowledged shutdown (protocol $version)" -ForegroundColor Green
+            $stopped = $true
+            break
+        }
+
+        Write-Verbose "protocol $version rejected Shutdown: $($response.error)"
     }
-    elseif ($response.success -eq $true) {
-        Write-Host "service acknowledged shutdown" -ForegroundColor Green
-    }
-    else {
-        Write-Warning "service rejected Shutdown: $($response.error)"
+
+    if (-not $stopped) {
+        Write-Warning "no protocol version was accepted; the running service is newer than this script"
     }
 }
 finally {

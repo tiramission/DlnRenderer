@@ -10,9 +10,12 @@ dotnet build DlnRenderer.sln -c Debug
 dotnet test DlnRenderer.sln -c Debug
 ```
 
-实测结果（2026-10-22）：**403 通过 / 0 失败，0 跳过**（Core 43、Player 23、Dlna 222、Service 115）。
+实测结果（2026-10-23）：**426 通过 / 0 失败，0 跳过**（Core 45、Player 25、Dlna 230、Service 126）。
 
 连续 3 次完整运行均为 0 失败（`dotnet test DlnRenderer.sln -c Debug --no-build`）。
+
+> §12 里 2026-10-22 那次 CI 运行的 402/403 是**历史快照**，未随用例增加改写——改了就不是那次
+> 运行的真实结果了。本文顶部的数字是本机 Debug 全量，随代码走。
 
 ### 1.1 Core（43）
 
@@ -42,7 +45,7 @@ dotnet test DlnRenderer.sln -c Debug
 | 顺序加载 | 音频→视频→音频，类型正确、位置重置 |
 | 播放中释放 | 播放中释放 < 5 s |
 
-### 1.3 Dlna（218）
+### 1.3 Dlna（230）
 
 | 组 | 覆盖内容 |
 | --- | --- |
@@ -54,7 +57,7 @@ dotnet test DlnRenderer.sln -c Debug
 | `DidlLiteParserTests` | 字段提取、损坏/空/XXE 输入容错 |
 | `DlnaDeviceHostTests` | 回环上的真实 HTTP：描述/SCPD、SOAP 控制、Fault（含 `utf-8` 声明）、405/404/501、端口释放与冲突、重复启动 |
 
-### 1.4 Service（110）
+### 1.4 Service（126）
 
 本节只展开 IPC；窗口、GENA 与 RenderingControl 的服务层测试见 §4.1、§5.1。
 
@@ -64,8 +67,14 @@ dotnet test DlnRenderer.sln -c Debug
 `IpcServerTests` 通过真实 Named Pipe 验证：
 
 - 连接后收到初始快照，`GetStatus` 返回状态
-- `Play`/`Pause`/`Stop`/`Seek`/`SetVolume` 到达渲染器
-- 非法参数、未知命令、协议版本不一致均返回失败且不触达渲染器
+- `Play`/`Pause`/`Stop`/`Seek`/`SetVolume`/`SetMute` 到达渲染器
+- `SetVideoTarget` 完整往返：`VideoTarget` 的字段（含 `Enabled` 与 `CornerRadius`）到达渲染器
+  并原样读回——这是画面位置契约唯一的自动化守卫
+- 非法参数、未知命令、协议版本不一致均返回失败且不触达渲染器。
+  线协议版本当前是 **1.1**（`IpcProtocol.Version`）；版本校验用例用 `version: "0.9"` 断言错误
+  里含 `version`
+- **版本不匹配是"拒绝"，不是"断线"**：服务回 `success=false` 后连接仍然可用，因此脚本可以
+  在同一条管道上依次试多个版本（`tools/package/stop-service.ps1` 正是这么做的）
 - 渲染器失败被如实报告（不伪装为成功）
 - 状态变化会推送给已连接的客户端
 - 协议违规只断开该客户端，服务继续服务新客户端
@@ -103,6 +112,10 @@ pwsh tools/control-point/renderer-check.ps1 -MediaUrl "http://<本机LAN地址>:
 # IPC（与 UI 相同的命令通道）
 pwsh tools/control-point/ipc-check.ps1
 ```
+
+> 这条脚本自己拼消息，因此**带有线协议版本号**（顶部的 `$protocolVersion`）。它必须与
+> `IpcProtocol.Version` 一致，否则每条命令都被服务端拒绝，输出一串版本错误——那看起来像
+> "服务坏了"，实际是脚本过期。协议升版时同步这里。
 
 ### 2.3 实测结果
 
@@ -188,12 +201,25 @@ soap action GetTransportInfo from 192.168.1.72   (控制端持续轮询)
 
 | 测试 | 数量 | 覆盖内容 |
 | --- | --- | --- |
-| `VideoWindowPolicyTests` | 14 | Play 后全屏；Pause/Buffering/Transitioning 保持；Stop/Error 隐藏；**预加载（paused 但未 Play）不占屏**；纯音频不占屏；媒体切换时的陈旧事件不驱动窗口 |
+| `VideoWindowPolicyTests` | 15 | Play 后全屏；Pause/Buffering/Transitioning 保持；Stop/Error 隐藏；**预加载（paused 但未 Play）不占屏**；纯音频不占屏；媒体切换时的陈旧事件不驱动窗口 |
 | `FullscreenGeometryTests` | 11 | 覆盖整块显示器（非工作区）；多显示器负坐标；首选显示器保持；显示器拔出回退；分辨率变化重算；真实桌面至少一个可用显示器 |
-| `VideoPresenterTests` | 14 | 真实 HWND：无标题栏/无边框的 WS_POPUP、`WS_EX_TOPMOST`、`WS_EX_TOOLWINDOW`、矩形等于某块显示器；重复 Show 幂等；Hide 保留 HWND 且退出置顶；**Hide 后再 Show 必须重新显示 mpv 子窗口并恢复尺寸**；反复 Play/Stop 循环；并发 Show/Hide 后状态自洽；Dispose 释放 |
-| `SessionWindowLifecycleTests` | 8 | `RendererSession` + 真实 libmpv：Load 不占屏 / Play 占屏并置顶；Pause 保持、Stop 隐藏；播完自动隐藏；切换媒体复用同一 HWND；连续 Play/Stop；加载失败不留空白全屏；Seek/Pause 不掉出置顶；快照与窗口一致 |
+| `VideoPresenterTests` | 19 | 真实 HWND：无标题栏/无边框的 WS_POPUP、`WS_EX_TOPMOST`、`WS_EX_TOOLWINDOW`、矩形等于某块显示器；重复 Show 幂等；Hide 保留 HWND 且退出置顶；**Hide 后再 Show 必须重新显示 mpv 子窗口并恢复尺寸**；反复 Play/Stop 循环；并发 Show/Hide 后状态自洽；Dispose 释放；<br>**嵌入**：`Embedded_target_reparents_the_window_into_the_host`、`Switching_back_to_fullscreen_detaches_from_the_host`（切换方向都要覆盖，残留 `WS_EX_TOPMOST` 会让画面在脱离时盖住所有窗口）<br>**失败方向**：`Embedded_without_a_usable_area_hides_instead_of_going_fullscreen`（旧行为是回退全屏，已反转）、`Fullscreen_mode_with_no_host_still_uses_the_overlay`、`A_suspended_target_hides_the_picture_instead_of_going_fullscreen` |
+| `SessionWindowLifecycleTests` | 9 | `RendererSession` + 真实 libmpv：Load 不占屏 / Play 占屏并置顶；Pause 保持、Stop 隐藏；播完自动隐藏；切换媒体复用同一 HWND；连续 Play/Stop；加载失败不留空白全屏；Seek/Pause 不掉出置顶；快照与窗口一致；`Switching_to_embedded_moves_a_playing_video_into_the_host_window`（**播放中**切嵌入，不是停了再播） |
 
 窗口相关测试归入 `video-window` collection（`DisableParallelization = true`）：置顶带是桌面级共享资源，并行执行会互相干扰。
+
+#### 有意留白：没有自动化覆盖的改动
+
+下面这些都进不了单元测试，靠人工验收。列出来是为了不让"文档里写了"被当成"测过了"：
+
+| 改动 | 为什么没有测试 | 人工验收方式 |
+| --- | --- | --- |
+| 悬浮控制条跟随主题、圆角、去边框 | 纯 UI 窗口属性（`SetWindowRgn` / `DWMWA_*`），无 App 测试项目 | 浅色/深色主题各看一次；圆角外不应有系统边框的白环 |
+| 画面圆角（`VideoTarget.CornerRadius`） | 需要真实 mpv 画面 + 视觉判断 | 窗口态投屏，四角应为圆角；全屏态应为直角 |
+| 挂起改到导航事件 | 时序行为，依赖 WinUI 框架 | 投屏中点设置图标：画面消失、音频继续、**不铺满屏幕** |
+| `ServiceClient.RequestRejected` | 无 App 测试项目 | 让服务与 UI 版本不一致，按播放键应给出中文提示而非重连 |
+| `RendererSnapshot.ServiceBuild` 自检 | UI 侧比对，无 App 测试项目 | 服务状态栏应显示"版本不一致"并降级为警告 |
+| `video target:` 诊断日志 | 日志文本 | 见 [`ipc-protocol.md`](ipc-protocol.md) §7 |
 
 ### 4.2 真实服务端到端
 
@@ -543,7 +569,7 @@ pwsh tools/media-compat/measure-media.ps1     # 跑测量并生成 docs/media-ma
 | --- | --- |
 | `tools/package/build-dist.ps1` | 发布 App + Service（Release / win-x64 / 框架依赖），复制 libmpv 与 Assets，并校验产物（缺 exe / native DLL / 图标即失败） |
 | `tools/package/install.ps1` | 停旧实例 → 复制到 `%ProgramFiles%\DlnRenderer` → 防火墙规则 → 开机启动 → 快捷方式 |
-| `tools/package/stop-service.ps1` | 通过 IPC `Shutdown` 干净停止服务（与托盘"退出应用"同一路径） |
+| `tools/package/stop-service.ps1` | 通过 IPC `Shutdown` 干净停止服务（与托盘"退出应用"同一路径）。**按协议版本列表依次尝试**（新的在前、已知旧版在后）：它要停的往往是尚未升级的旧服务，而版本不匹配时服务端只回错误帧、不断连，所以同一条管道上可以试多个版本 |
 | `tools/package/firewall-rules.ps1` | `-Action Add` / `Remove`：UDP 1900（SSDP）+ TCP 18090（描述/SOAP/GENA） |
 | `tools/package/uninstall.ps1` | 停进程 → 删防火墙规则 → 删数据目录 → 删快捷方式与启动项 → 删安装目录 |
 
@@ -565,6 +591,9 @@ pwsh tools/media-compat/measure-media.ps1     # 跑测量并生成 docs/media-ma
 - 升级前：`DlnRenderer.Service` PID 4768 在运行，安装目录有旧版标记文件。
 - 脚本先通过 IPC 停掉该进程（`service closed the connection` → `DlnRenderer.Service has exited`），
   再覆盖文件，最后确认 `tasklist` 中已无该进程 —— **无孤儿进程**。
+- **跨协议版本的升级也要走通这一段**：正在跑的是旧服务，它不认识新版号。脚本因此按版本列表
+  依次尝试（§3 工具表），实测对新旧服务都能干净停掉；服务日志应以
+  `shutdown requested over ipc` → `service stopped` 收尾，而不是被 `Stop-Process` 结束。
 - 副作用记录：升级不会删除安装目录里用户自己放的文件（本次的标记文件仍在）。
   升级覆盖的是发布产物，不做整目录清空，这是有意的（避免误删日志/配置）。
 
@@ -633,7 +662,7 @@ pwsh tools/package/verify-service.ps1              # 体检
 | 视频窗口 | `video surface created (hwnd …)`；投送时 `video presenter fullscreen/hidden` 正常切换 |
 | 真实控制端 192.168.1.72 | 取 `description.xml`/SCPD → `SUBSCRIBE` → `SetAVTransportURI` → `Play`，`Playing` |
 | 投送期间 mpv 错误 | **无**（上一版 session 0 下每次必现 swapchain 失败） |
-| 全量测试 | Core 43 / Player 23 / Dlna 222 / Service 115，共 403，0 失败 |
+| 全量测试 | Core 45 / Player 25 / Dlna 230 / Service 126，共 426，0 失败 |
 
 > 测试环境注意：机器提交内存吃紧时 `dotnet test` 会报 `OutOfMemoryException` 或
 > `Win32Exception 1455 页面文件太小`，与代码无关。`dotnet build-server shutdown` 后加 `-m:1` 串行即可。

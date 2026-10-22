@@ -1,5 +1,9 @@
 # DLNA 协议面与客户端兼容性
 
+> **范围**：本文只讲**对外**那一侧——控制端（手机 App）↔ 渲染器之间的 SSDP / HTTP / SOAP / GENA。
+> 界面（`DlnRenderer.exe`）与后台服务（`DlnRenderer.Service.exe`）之间的命名管道是另一条独立的
+> 内部协议，记录在 [`ipc-protocol.md`](ipc-protocol.md)。
+
 本文记录 DlnRenderer 对外暴露的 DLNA/UPnP 协议面，以及每个偏离"教科书实现"的地方**为什么**要这样写。
 这些取舍不是风格偏好：每一条都对应一个真实控制端（尤其是抖音、腾讯视频这类国产投屏入口）在真机上
 出现过的失败，参考实现是同机验证通过的 MiniCast（Python + cherrypy + libmpv）。
@@ -151,4 +155,8 @@ action 名通过 `u:` 前缀限定，**出参不带命名空间**。给响应元
    出现 `timed out` 说明串行 pump 被慢回调阻塞（可调 `NotifyRequestTimeout`）。
 6. `seek deferred until the media is reloaded` / `seek applied after reload`：进度控制是否走的是
    延后路径；若一直只有前者，说明媒体重载本身失败（看 `reload attempt N did not settle`）。
+
+以上六步都在对外链路上。控制端一切正常但画面不对（位置偏了、切个页面就铺满整屏、没画面）时，
+问题通常在内部一侧：看 `video target:` 与启动横幅里的 build 号，步骤见
+[`ipc-protocol.md`](ipc-protocol.md) §7——先分清是界面发错了还是服务没执行。
 

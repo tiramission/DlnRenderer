@@ -162,7 +162,11 @@ internal static class Program
         var uuid = DeviceIdentity.LoadOrCreate(ServicePaths.DeviceStateFile);
         DeviceIdentity.Save(ServicePaths.DeviceStateFile, uuid, options.FriendlyName);
 
-        log.Write($"service starting (pid {Environment.ProcessId}, udn uuid:{uuid:D})");
+        // The build number is part of the banner on purpose: the UI and the service are separate
+        // executables, and a stale service next to a fresh UI silently ignores fields it does not
+        // know about. That mismatch once made a fixed bug look unfixed.
+        var build = typeof(ServiceStartupOptions).Assembly.GetName().Version?.ToString(3) ?? "unknown";
+        log.Write($"service starting (pid {Environment.ProcessId}, build {build}, udn uuid:{uuid:D})");
         log.Write(
             $"launch: {(options.LaunchedByServiceControlManager ? "service control manager" : "interactive/ui")}, " +
             $"state directory {ServicePaths.DataDirectory}");

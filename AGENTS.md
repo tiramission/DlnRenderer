@@ -131,7 +131,8 @@ DlnRenderer/
 │   └── DlnRenderer.Player.Tests/
 ├── docs/
 │   ├── architecture.md
-│   ├── protocol.md
+│   ├── protocol.md       # DLNA/UPnP 侧（控制端 ↔ 渲染器）
+│   ├── ipc-protocol.md   # 命名管道侧（界面 ↔ 后台服务）
 │   ├── development.md
 │   └── testing.md
 └── packaging/

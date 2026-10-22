@@ -46,7 +46,7 @@ dotnet build DlnRenderer.sln -c Debug
 dotnet test DlnRenderer.sln -c Debug
 ```
 
-预期结果（本轮实测）：构建 0 警告 / 0 错误，测试 **403 通过 / 0 失败**（Core 43、Player 23、Dlna 222、Service 115）。
+预期结果（本轮实测，2026-10-23）：构建 0 警告 / 0 错误，测试 **426 通过 / 0 失败**（Core 45、Player 25、Dlna 230、Service 126）。
 
 测试分两类：
 
@@ -59,8 +59,9 @@ dotnet test DlnRenderer.sln -c Debug
 
 `.github/workflows/ci.yml` 在 `windows-latest` 上跑与上面完全相同的命令，但它**自己供应**两个原生
 依赖，所以播放器相关用例是真实执行而不是跳过：`fetch-libmpv.ps1 -Download`（双哈希校验）、
-`choco install ffmpeg`。2026-10-22 的结果是 **402 通过 / 0 失败 / 0 跳过**（另 1 个 GPU 硬解测试
-因 runner 无显卡按全名排除）。细节与迭代记录见 `docs/testing.md` §12。
+`choco install ffmpeg`。2026-10-22 那次运行是 **402 通过 / 0 失败 / 0 跳过**（另 1 个 GPU 硬解测试
+因 runner 无显卡按全名排除）；此后用例数增加到 426，CI 尚未重跑。细节与迭代记录见
+`docs/testing.md` §12。
 
 ## 4. 运行
 
@@ -80,6 +81,10 @@ src\DlnRenderer.Service\bin\Debug\net10.0-windows\DlnRenderer.Service.exe --http
 `--exit-after`。
 
 服务启动时先读 `%LOCALAPPDATA%\DlnRenderer\settings.json`（设置页写入），命令行参数优先于文件设置。
+
+> **重新构建服务之后要重启后台服务。** UI 与服务是两个可执行文件，旧服务会静默忽略它不认识的
+> 消息字段，线协议版本不匹配时则直接拒绝请求——两种情况都表现为"改了代码却没生效"，或"修好的
+> 缺陷又出现了"。界面状态栏会用警告提示版本不一致（[`ipc-protocol.md`](ipc-protocol.md) §6）。
 
 ### 4.1 UI 自动化验收（`winapp ui`）
 
@@ -144,6 +149,10 @@ winapp unregister --manifest src/DlnRenderer.App/Package.appxmanifest
 | `NU1004` 锁文件与项目不一致 | 依赖或 RID 变更后未更新锁文件；按上节流程重新生成并审查 |
 | 视频区域黑屏/被遮住 | 原生子窗口被 WinUI 内容桥接窗口覆盖；检查 `MpvVideoSurface` 的置顶调用 |
 | 播放时没有声音 | 确认系统输出设备；`wasapi` 会话存在但无声属环境问题，不是播放器错误 |
+| `后台服务版本不匹配` / 状态栏显示“版本不一致” | UI 与服务是**两个可执行文件**，IPC 线协议版本或 build 不一致。在设置页点“重启后台服务”，或退出应用后重新启动 |
+| 命令返回失败但连接没断 | 这是 `RequestRejected`（服务应答了，只是拒绝），**不是** `Faulted`（断线）。不要去查重连 |
+| 画面位置不对 / 切换页面时画面突然铺满整屏 | 先看服务日志里的 `video target:` 行，判断是 UI 发错了还是服务没执行——见 [`ipc-protocol.md`](ipc-protocol.md) §7 |
+| `ipc-check.ps1` 每条命令都报 protocol version | 脚本顶部的 `$protocolVersion` 过期，与 `IpcProtocol.Version` 同步即可 |
 
 ## 7. 版本控制
 
@@ -183,7 +192,8 @@ tools/package/               build-dist / install / uninstall / firewall-rules /
 tools/assets/                make-icons（生成应用图标与 MSIX 瓦片/启动图）
 src/DlnRenderer.App/Assets/  AppIcon.ico、瓦片与启动图（均由 make-icons 生成）
 scripts/fetch-libmpv.ps1
-docs/
+docs/                        architecture / testing / development / packaging / msix-assessment
+                             protocol（DLNA/UPnP 侧） / ipc-protocol（UI ↔ 服务） / media-matrix / licenses
 ```
 
 ## 9. 图标与图片资源
@@ -214,10 +224,21 @@ node tools/control-point/media-server.js "$env:TEMP\dln-media" 18777
 pwsh tools/control-point/renderer-check.ps1 -MediaUrl "http://<本机LAN地址>:18777/long.mp4"
 
 # IPC（与 UI 相同的管道）
+# 脚本自带线协议版本号，须与 IpcProtocol.Version 一致，否则每条命令都被拒绝
 pwsh tools/control-point/ipc-check.ps1
 
 # 抓取服务视频窗口的内容（不受其他窗口遮挡影响）
 pwsh tools/control-point/capture-window.ps1 -Hwnd 0x<窗口句柄>
 ```
 
-服务日志默认写入 `%LOCALAPPDATA%\DlnRenderer\logs\service-<日期>.log`。
+服务日志默认写入 `%LOCALAPPDATA%\DlnRenderer\logs\service-<日期>.log`。两行对排查特别有用：
+
+```text
+# 启动横幅带 build 号，用来核对 UI 与服务是不是同一版本
+service starting (pid 41360, build 0.3.0, udn uuid:...)
+
+# 每次 UI 上报显示目标都记一行 —— 画面位置问题的第一手证据
+video target: mode=Embedded enabled=False host=0x1A2B3C rect=240,120 1200x680
+```
+
+完整的 IPC 契约与这两行的读法见 [`ipc-protocol.md`](ipc-protocol.md)。

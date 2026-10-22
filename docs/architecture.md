@@ -280,7 +280,10 @@ winapp run src/DlnRenderer.App -c Debug --detach
 2. 把仓库纳入 Git 管理并提交 `packages.lock.json`。
 3. 阶段 3：定义 IPC 协议（版本字段、请求 ID、错误结构、大小上限），创建 `DlnRenderer.Service` 与
    `DlnRenderer.Dlna` 项目，实现 `GetStatus` 与 `RendererStateChanged`，在 UI 上显示服务连接状态。
-4. 补充 `docs/protocol.md`，并把播放器接口固定为 IPC 的命令契约来源。
+4. ~~补充 `docs/protocol.md`，并把播放器接口固定为 IPC 的命令契约来源~~ **已完成**：
+   `docs/protocol.md` 记录 DLNA/UPnP 侧；IPC 侧的契约、版本协商与排查步骤独立成
+   [`docs/ipc-protocol.md`](ipc-protocol.md)，命令契约的单一来源仍是
+   `src/DlnRenderer.Core/Ipc/IpcProtocol.cs`。
 5. 为 IPC 消息解析与 DIDL-Lite 解析先行编写单元测试（可在无真实网络的情况下验证）。
 
 ---
@@ -445,6 +448,12 @@ sha256 `38acd030...`）的 `mpv-configuration` **同样不含** `-Dgpl=false`，
    `IpcProtocol.PipeBufferBytes`（256 KiB）；客户端无法指定缓冲区，因此由服务端决定。
 6. **IPC 安全**：`PipeOptions.CurrentUserOnly`，只允许当前用户连接；消息带版本、请求 ID、
    4 字节长度前缀、64 KiB 上限与 30 s 读超时。
+
+完整契约（消息形状、命令表、版本协商与不匹配时的拒绝行为、`VideoTarget` 字段语义、两端版本
+自检、排查用的日志行）见 [`docs/ipc-protocol.md`](ipc-protocol.md)。这里只记一条容易重犯的
+运维约束：**UI 与服务是两个可执行文件，必须同版本**。旧服务会静默忽略不认识的字段（如
+`VideoTarget.Enabled`），于是"已修好的缺陷看起来没修好"；现在线协议版本不匹配会被明确拒绝，
+快照里的 `ServiceBuild` 让界面主动报"版本不一致"，但两者都只能靠重启后台服务解决。
 
 ### 11.4 实测结果
 
@@ -634,9 +643,12 @@ DLNA/IPC 命令 ─►        │
 | `Fullscreen`（默认） | 现有行为：无边框全屏覆盖一块显示器，置顶。界面关到托盘后继续播出。 |
 | `Embedded` | 画面接管**窗口内容区**（导航栏右侧、标题栏下方），控制以悬浮条叠在画面上，可全屏。 |
 
-**契约**：UI 通过 IPC `SetVideoTarget` 上报 `{mode, hostWindow, x, y, w, h}`，
+**契约**：UI 通过 IPC `SetVideoTarget` 上报 `{mode, hostWindow, x, y, w, h, enabled, cornerRadius}`，
 坐标是**物理像素、相对主窗口客户区**。只有 UI 知道自己的 DPI、布局和标题栏高度，
 把窗口位置从契约里去掉之后，服务端不需要在用户拖动窗口时做任何坐标换算。
+
+字段语义（尤其 `enabled` 与"没有 host"的区别）、版本协商与排查日志见
+[`docs/ipc-protocol.md`](ipc-protocol.md) §5、§7。
 
 **矩形来源**：窗口态取**页面自身的 bounds**（`TransformToVisual(null)`）——它天然排除标题栏和
 导航栏，布局怎么变都不用页面去理解窗口结构；全屏态取整个 `XamlRoot`，因为此时没有值得保留的
@@ -720,8 +732,9 @@ host 窗口有问题，让用户看见画面并去排查比黑屏好。
 
 #### 生命周期
 
-- 主窗口页面卸载（切到设置页）时上报无 host 的目标，服务端立即脱离并回到自己的全屏窗口。
-  注意嵌入式模式下画面覆盖整个窗口，导航区本身也在画面之下，正常使用中不会走到这里。
+- 离开播放页时上报 `Enabled=false` 的目标，服务端**隐藏画面并保留会话**（不脱离、不换地方播）。
+  挂起由 `MainWindow` 的导航事件发出，页面自己的 `Unloaded` 还会再发一次；两次内容一致，
+  重复发送无害，但只有导航事件那一次是权威的——它不依赖框架的卸载/加载顺序。
 - IPC 客户端全部断开时服务端主动脱离：子窗口会随父窗口销毁，留着一个指向已销毁 HWND 的
   播放器会把画面画进不存在的窗口。
 - 服务启动时先按设置里的模式初始化，host 与矩形等 UI 上报后补齐。
@@ -908,6 +921,11 @@ UI 启动时按 `ServiceClient.ResolveServicePath()` 的优先级查找服务：
 两个问题：SSDP socket 进入 `TIME_WAIT` 导致新装的副本短时间内无法重新加入多播组；视频窗口
 与 named pipe 由服务自己持有，异常退出不会释放干净。因此脚本顺序是：
 IPC 请求 → 等待退出 → 仅在仍存活时 `Stop-Process` → 进程消失后才动文件（否则 DLL 被锁）。
+
+**升级时要停的恰恰是旧服务**，而旧服务不认识新的线协议版本。`stop-service.ps1` 因此按版本列表
+依次尝试（新的在前，已知旧版在后）——版本不匹配时服务端只回错误帧、不断连，所以同一条管道上
+可以试多个版本。实测：新服务返回 `service acknowledged shutdown (protocol 1.1)`，日志以
+`shutdown requested over ipc` → `service stopped` 收尾；走到 `Stop-Process` 即说明这条路断了。
 
 ## 17. 阶段 F：许可证与可复现发布
 
