@@ -190,10 +190,11 @@ jobs:
           Get-Content SHA256SUMS-assets.txt
           Pop-Location
 
-      # v5 targets node24; the v4 tag targets node20 and is forced onto node24 with a deprecation
-      # annotation on every run, the same thing that was fixed in ci.yml.
+      # v6 is the first upload-artifact tag that targets node24 (v4 and v5 both declare node20 and
+      # are forced onto node24 with a deprecation annotation on every run). Checked against the
+      # tag's action.yml, not assumed from the major version.
       - name: Upload workflow artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: DlnRenderer-${{ inputs.version }}
           path: dist/assets/*
@@ -263,7 +264,7 @@ jobs:
           Get-Content "dist/assets/RELEASE-NOTES.md" -TotalCount 5
 
       - name: Upload release notes
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: DlnRenderer-${{ inputs.version }}-notes
           path: dist/assets/RELEASE-NOTES.md
