@@ -11,7 +11,9 @@
     <Grid Padding="24" RowSpacing="16">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
+            <!--  Video surface: the service draws into this rectangle in "UI window" mode.  -->
+            <RowDefinition x:Name="VideoRow" Height="0" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
@@ -23,7 +25,34 @@
             Message="{x:Bind ViewModel.ServiceText, Mode=OneWay}"
             Severity="{x:Bind ViewModel.ServiceSeverity, Mode=OneWay}" />
 
-        <Grid Grid.Row="1" ColumnSpacing="24">
+        <!--
+            The video is a native child window owned by the service, drawn on top of this rectangle.
+            Everything here is therefore a backdrop that is only visible while nothing is cast, or
+            when the renderer fell back to fullscreen because the UI is not showing this page.
+        -->
+        <Border
+            x:Name="VideoSurface"
+            Grid.Row="1"
+            Background="#FF000000"
+            CornerRadius="8"
+            SizeChanged="OnVideoSurfaceSizeChanged"
+            Visibility="Collapsed">
+            <StackPanel
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                Spacing="8">
+                <FontIcon
+                    FontSize="28"
+                    Foreground="#FF7A7A7A"
+                    Glyph="&#xE714;" />
+                <TextBlock
+                    HorizontalAlignment="Center"
+                    Foreground="#FF9A9A9A"
+                    Text="投屏画面将显示在这里" />
+            </StackPanel>
+        </Border>
+
+        <Grid Grid.Row="2" ColumnSpacing="24">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
@@ -81,7 +110,7 @@
             </StackPanel>
         </Grid>
 
-        <StackPanel Grid.Row="2" Spacing="12">
+        <StackPanel Grid.Row="3" Spacing="12">
             <Grid ColumnSpacing="12">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />

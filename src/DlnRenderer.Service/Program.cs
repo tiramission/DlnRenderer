@@ -1,4 +1,6 @@
 using System.Net;
+using DlnRenderer.Core.Ipc;
+using DlnRenderer.Core.Models;
 using DlnRenderer.Core.Settings;
 using DlnRenderer.Dlna;
 using DlnRenderer.Player.Mpv;
@@ -164,7 +166,8 @@ internal static class Program
         log.Write(
             $"launch: {(options.LaunchedByServiceControlManager ? "service control manager" : "interactive/ui")}, " +
             $"state directory {ServicePaths.DataDirectory}");
-        log.Write($"settings: device name '{options.FriendlyName}', hwdec={options.HardwareDecoding}");
+        log.Write($"settings: device name '{options.FriendlyName}', hwdec={options.HardwareDecoding}, " +
+                  $"display={options.DisplayMode}");
 
         var presenter = await VideoPresenter.StartAsync().ConfigureAwait(false);
         running.Presenter = presenter;
@@ -184,6 +187,11 @@ internal static class Program
 
         var session = new RendererSession(player, presenter, dlnaOptions, log.Write);
         running.Session = session;
+
+        // The mode is known before the UI connects, but the host window and the reserved rectangle
+        // are not: until the UI reports them the presenter stays fullscreen, which is also the
+        // documented fallback for a service running with no UI at all.
+        session.SetVideoTarget(new VideoTarget { Mode = options.DisplayMode });
 
         var host = new DlnaDeviceHost(dlnaOptions, session, log.Write);
         running.Host = host;
@@ -328,6 +336,12 @@ internal sealed record ServiceStartupOptions
     /// <summary>True when <c>--no-hwdec</c> was supplied, so settings must not override it.</summary>
     public bool HardwareDecodingSpecified { get; init; }
 
+    /// <summary>
+    /// Where video is shown. Read at start so a service launched without a UI (or before the UI has
+    /// laid out) already knows what the user asked for; the UI confirms it over IPC once connected.
+    /// </summary>
+    public DisplayMode DisplayMode { get; init; } = DisplayMode.Fullscreen;
+
     public IPAddress? ListenAddress { get; init; }
 
     public string? LogPath { get; init; } = ServicePaths.NewLogFile();
@@ -370,6 +384,7 @@ internal sealed record ServiceStartupOptions
         {
             FriendlyName = DeviceNameSpecified ? FriendlyName : settings.DeviceName,
             HardwareDecoding = HardwareDecodingSpecified ? HardwareDecoding : settings.HardwareDecoding,
+            DisplayMode = settings.DisplayMode,
         };
 
     /// <summary>

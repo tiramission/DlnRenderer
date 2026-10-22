@@ -1,6 +1,7 @@
 using System.Reflection;
 using CommunityToolkit.Mvvm.ComponentModel;
 using DlnRenderer.Core.Ipc;
+using DlnRenderer.Core.Models;
 using DlnRenderer.Core.Settings;
 using DlnRenderer.Services;
 using Microsoft.UI.Xaml.Controls;
@@ -21,6 +22,7 @@ public sealed class SettingsViewModel : ObservableObject
     private bool _startWithWindows;
     private bool _closeToTray;
     private bool _hardwareDecoding;
+    private DisplayMode _displayMode;
     private string _statusText = string.Empty;
     private bool _hasStatus;
     private bool _isError;
@@ -33,6 +35,7 @@ public sealed class SettingsViewModel : ObservableObject
         _startWithWindows = settings.StartWithWindows;
         _closeToTray = settings.CloseToTray;
         _hardwareDecoding = settings.HardwareDecoding;
+        _displayMode = settings.DisplayMode;
     }
 
     public string DeviceName
@@ -84,6 +87,54 @@ public sealed class SettingsViewModel : ObservableObject
     }
 
     /// <summary>
+    /// Selected presentation mode. The two radio buttons bind to the two views of this one value, so
+    /// they can never both be checked or both be clear.
+    /// </summary>
+    public DisplayMode DisplayMode
+    {
+        get => _displayMode;
+        set
+        {
+            if (_displayMode == value)
+            {
+                return;
+            }
+
+            _displayMode = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(IsFullscreenMode));
+            OnPropertyChanged(nameof(IsEmbeddedMode));
+            NotifyDirty();
+        }
+    }
+
+    /// <summary>Radio button view: setting false is ignored, the group already unchecked it.</summary>
+    public bool IsFullscreenMode
+    {
+        get => _displayMode == DisplayMode.Fullscreen;
+        set
+        {
+            if (value)
+            {
+                DisplayMode = DisplayMode.Fullscreen;
+            }
+        }
+    }
+
+    /// <summary>Radio button view: setting false is ignored, the group already unchecked it.</summary>
+    public bool IsEmbeddedMode
+    {
+        get => _displayMode == DisplayMode.Embedded;
+        set
+        {
+            if (value)
+            {
+                DisplayMode = DisplayMode.Embedded;
+            }
+        }
+    }
+
+    /// <summary>
     /// True when the page differs from what is on disk. The save button and the footer hint both
     /// read this, so an edit that cannot be saved (validation) never looks applied.
     /// </summary>
@@ -95,7 +146,8 @@ public sealed class SettingsViewModel : ObservableObject
             return !string.Equals((DeviceName ?? string.Empty).Trim(), saved.DeviceName, StringComparison.Ordinal)
                 || StartWithWindows != saved.StartWithWindows
                 || CloseToTray != saved.CloseToTray
-                || HardwareDecoding != saved.HardwareDecoding;
+                || HardwareDecoding != saved.HardwareDecoding
+                || DisplayMode != saved.DisplayMode;
         }
     }
 
@@ -184,6 +236,7 @@ public sealed class SettingsViewModel : ObservableObject
                 StartWithWindows = StartWithWindows,
                 CloseToTray = CloseToTray,
                 HardwareDecoding = HardwareDecoding,
+                DisplayMode = DisplayMode,
             }.Normalize();
 
             if (!RendererSettings.TryValidate(settings, out var validationError))
@@ -209,8 +262,14 @@ public sealed class SettingsViewModel : ObservableObject
 
             App.ReloadSettings();
             DeviceName = settings.DeviceName;
+
+            // The display mode is a window concern rather than a player one, so it is applied live
+            // instead of waiting for a service restart. Without a reserved rectangle the service
+            // stays fullscreen until the player page reports one.
+            await ApplyDisplayModeAsync(settings.DisplayMode);
+
             NotifyDirty();
-            Show("已保存。设备名称与硬件解码将在重启服务后生效。", isError: false);
+            Show("已保存。设备名称与硬件解码在重启服务后生效，显示方式已立即生效。", isError: false);
         }
         finally
         {
@@ -262,6 +321,33 @@ public sealed class SettingsViewModel : ObservableObject
     {
         Show("正在退出…", isError: false);
         await App.ExitApplicationAsync();
+    }
+
+    /// <summary>
+    /// Pushes the display mode to the running service.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately best-effort: the mode is persisted either way, and a service that is restarting
+    /// reads it from the settings file on its own start. Failing the save because the pipe is down
+    /// would block a change the user can see applied the next time the window reports its geometry.
+    /// </remarks>
+    private static async Task ApplyDisplayModeAsync(DisplayMode mode)
+    {
+        try
+        {
+            if (!App.Client.IsConnected)
+            {
+                return;
+            }
+
+            await App.Client.SendAsync(
+                IpcCommands.SetVideoTarget,
+                videoTarget: new VideoTarget { Mode = mode });
+        }
+        catch (Exception ex)
+        {
+            DiagnosticsLog.Write($"apply display mode failed: {ex.Message}");
+        }
     }
 
     public void DismissStatus() => HasStatus = false;

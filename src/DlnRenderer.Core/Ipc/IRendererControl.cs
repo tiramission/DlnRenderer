@@ -22,4 +22,10 @@ public interface IRendererControl
     Task SetVolumeAsync(int volume, CancellationToken cancellationToken);
 
     Task SetMuteAsync(bool muted, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Applies where video may be presented. <c>null</c> means the UI is gone: the renderer goes back
+    /// to presenting fullscreen on its own.
+    /// </summary>
+    void SetVideoTarget(VideoTarget? target);
 }

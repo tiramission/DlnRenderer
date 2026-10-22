@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using DlnRenderer.Core.Ipc;
 using DlnRenderer.Core.Models;
 using DlnRenderer.Dlna;
 using DlnRenderer.Player.Mpv;
@@ -230,6 +231,60 @@ public class SessionWindowLifecycleTests : IDisposable
         await WaitUntil(() => !ctx.Presenter.IsVisible, "hidden after stop");
     }
 
+    /// <summary>
+    /// "UI window" mode end to end: the session is asked to embed, and the picture that was covering
+    /// the screen ends up as a child of the window that made the request.
+    /// </summary>
+    /// <remarks>
+    /// A second presenter stands in for the application window. What matters is that the decision
+    /// travels from the session (which caches the target) to the presenter (which owns the HWND)
+    /// without waiting for the next player event - the user is watching when the mode changes.
+    /// </remarks>
+    [MpvFFmpegFact]
+    public async Task Switching_to_embedded_moves_a_playing_video_into_the_host_window()
+    {
+        await using var host = await VideoPresenter.StartAsync();
+        await using var ctx = await SessionContext.CreateAsync();
+
+        host.ShowFullscreen();
+        Assert.True(host.WaitForIdle(TimeSpan.FromSeconds(10)));
+
+        var media = CreateVideo();
+        await ctx.Session.LoadAsync(new Uri(media), Didl(media), CancellationToken.None);
+        await WaitUntil(
+            () => ctx.Session.GetSnapshot().Playback.State == PlaybackState.Paused,
+            "media loaded and paused");
+
+        await ctx.Session.PlayAsync(CancellationToken.None);
+        await WaitUntil(
+            () => ctx.Session.GetSnapshot().Playback.State == PlaybackState.Playing,
+            "playing");
+        await WaitUntil(() => ctx.Presenter.IsVisible, "visible after play");
+        Assert.Equal("fullscreen", ctx.Presenter.PresentationState);
+
+        ctx.Session.SetVideoTarget(new VideoTarget
+        {
+            Mode = DisplayMode.Embedded,
+            HostWindow = host.WindowHandle,
+            X = 20,
+            Y = 20,
+            Width = 300,
+            Height = 200,
+        });
+
+        // The move is posted to the window thread; drain it before reading Win32 state back.
+        Assert.True(ctx.Presenter.WaitForIdle(TimeSpan.FromSeconds(10)), "the window thread did not settle");
+
+        Assert.Equal(host.WindowHandle, GetParent(ctx.Presenter.WindowHandle));
+        Assert.Equal("embedded", ctx.Presenter.PresentationState);
+        Assert.False(ctx.Presenter.IsTopmost);
+
+        // Detach before the stand-in host is destroyed: a child window would go with it.
+        ctx.Session.SetVideoTarget(null);
+        Assert.True(ctx.Presenter.WaitForIdle(TimeSpan.FromSeconds(10)), "the window thread did not settle");
+        Assert.Equal(0, GetParent(ctx.Presenter.WindowHandle));
+    }
+
     private static async Task WaitUntil(Func<bool> condition, string what)
     {
         var clock = Stopwatch.StartNew();
@@ -289,4 +344,7 @@ public class SessionWindowLifecycleTests : IDisposable
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool IsWindow(nint hwnd);
+
+    [DllImport("user32.dll")]
+    private static extern nint GetParent(nint hwnd);
 }

@@ -25,7 +25,7 @@ public class VideoWindowPolicyTests
     [InlineData(PlaybackState.Transitioning)]
     public void Video_that_is_playing_covers_the_screen(PlaybackState state)
         => Assert.Equal(
-            VideoWindowMode.Fullscreen,
+            VideoWindowMode.Shown,
             VideoWindowPolicy.Decide(Status(state), requested: true, playbackStarted: true));
 
     [Theory]
@@ -59,7 +59,7 @@ public class VideoWindowPolicyTests
     {
         // Same status, different intent: Play was pressed, so Pause is deliberate and the picture stays.
         Assert.Equal(
-            VideoWindowMode.Fullscreen,
+            VideoWindowMode.Shown,
             VideoWindowPolicy.Decide(
                 Status(PlaybackState.Paused),
                 requested: true,
@@ -96,7 +96,7 @@ public class VideoWindowPolicyTests
         // before the next Play reloads it. Without remembering the last known kind, replaying a video
         // would leave the overlay hidden.
         Assert.Equal(
-            VideoWindowMode.Fullscreen,
+            VideoWindowMode.Shown,
             VideoWindowPolicy.Decide(
                 Status(PlaybackState.Buffering, MediaKind.Unknown),
                 requested: true,

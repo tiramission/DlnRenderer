@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using DlnRenderer.Core.Ipc;
+using DlnRenderer.Core.Models;
 using DlnRenderer.Service.Hosting;
 
 namespace DlnRenderer.Service.Tests;
@@ -385,6 +387,119 @@ public class VideoPresenterTests
         }, 0);
 
         return count;
+    }
+
+    /// <summary>
+    /// "UI window" mode: the video becomes a child of the application window at the reserved rect.
+    /// </summary>
+    /// <remarks>
+    /// A second presenter stands in for the application window - it is a real top-level HWND, which
+    /// is all the embedding contract requires. What is asserted is exactly what the user sees: the
+    /// window is inside the host, clipped by it, sized to the rectangle and never topmost.
+    /// </remarks>
+    [Fact]
+    public async Task Embedded_target_reparents_the_window_into_the_host()
+    {
+        await using var host = await VideoPresenter.StartAsync();
+        await using var child = await VideoPresenter.StartAsync();
+
+        host.ShowFullscreen();
+        Assert.True(host.WaitForIdle(IdleTimeout));
+
+        child.SetTarget(new VideoTarget
+        {
+            Mode = DisplayMode.Embedded,
+            HostWindow = host.WindowHandle,
+            X = 40,
+            Y = 30,
+            Width = 320,
+            Height = 180,
+        });
+        child.Show();
+        Assert.True(child.WaitForIdle(IdleTimeout));
+
+        Assert.Equal(host.WindowHandle, child.EmbeddedHost);
+        Assert.Equal(host.WindowHandle, GetParent(child.WindowHandle));
+        Assert.Equal("embedded", child.PresentationState);
+        Assert.True(child.IsVisible);
+
+        // A child window has no place in the topmost band, and taking it there would put the video
+        // over every other application even though it belongs to a normal window.
+        Assert.False(child.IsTopmost);
+
+        Assert.True(
+            await WaitForClientSizeAsync(child, 320, 180),
+            $"expected the mpv surface at 320x180, got {child.ClientWidth}x{child.ClientHeight}");
+
+        // The mpv surface stays a child of the video window, which is what makes the move invisible
+        // to the player: no restart, no new wid.
+        Assert.Equal(child.WindowHandle, GetParent(child.ChildHandle));
+    }
+
+    [Fact]
+    public async Task Switching_back_to_fullscreen_detaches_from_the_host()
+    {
+        await using var host = await VideoPresenter.StartAsync();
+        await using var child = await VideoPresenter.StartAsync();
+
+        host.ShowFullscreen();
+        Assert.True(host.WaitForIdle(IdleTimeout));
+
+        child.SetTarget(new VideoTarget
+        {
+            Mode = DisplayMode.Embedded,
+            HostWindow = host.WindowHandle,
+            X = 0,
+            Y = 0,
+            Width = 200,
+            Height = 120,
+        });
+        child.Show();
+        Assert.True(child.WaitForIdle(IdleTimeout));
+        Assert.NotEqual(0, child.EmbeddedHost);
+
+        // Back to the standalone overlay: the window must leave the host completely, otherwise a
+        // child of a window the user may close would take the player's surface with it.
+        child.SetTarget(new VideoTarget { Mode = DisplayMode.Fullscreen });
+        child.ShowFullscreen();
+        Assert.True(child.WaitForIdle(IdleTimeout));
+
+        Assert.Equal(0, child.EmbeddedHost);
+        Assert.Equal(0, GetParent(child.WindowHandle));
+        Assert.Equal("fullscreen", child.PresentationState);
+        Assert.True(child.IsTopmost);
+    }
+
+    [Fact]
+    public async Task Embedded_without_a_host_falls_back_to_fullscreen()
+    {
+        await using var presenter = await VideoPresenter.StartAsync();
+
+        // The UI is starting, or its page has not laid out yet: playing with no picture anywhere
+        // would look like a broken renderer, so the overlay is used instead.
+        presenter.SetTarget(new VideoTarget { Mode = DisplayMode.Embedded });
+        presenter.Show();
+        Assert.True(presenter.WaitForIdle(IdleTimeout));
+
+        Assert.Equal(0, presenter.EmbeddedHost);
+        Assert.Equal("fullscreen", presenter.PresentationState);
+        Assert.True(presenter.IsVisible);
+    }
+
+    private static async Task<bool> WaitForClientSizeAsync(VideoPresenter presenter, int width, int height)
+    {
+        var deadline = DateTime.UtcNow + IdleTimeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (presenter.ClientWidth == width && presenter.ClientHeight == height)
+            {
+                return true;
+            }
+
+            await Task.Delay(20);
+        }
+
+        return false;
     }
 
     private const int GwlStyle = -16;

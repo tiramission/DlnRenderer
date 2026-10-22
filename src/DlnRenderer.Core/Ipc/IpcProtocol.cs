@@ -48,8 +48,56 @@ public static class IpcCommands
     public const string SetVolume = "SetVolume";
     public const string SetMute = "SetMute";
 
+    /// <summary>
+    /// Tells the service where it may draw video: the display mode, the UI window to embed into and
+    /// the reserved rectangle. Sent on connect, whenever that rectangle changes, and when the user
+    /// switches mode.
+    /// </summary>
+    public const string SetVideoTarget = "SetVideoTarget";
+
     /// <summary>Stops the service process. Only sent when the user exits the whole application.</summary>
     public const string Shutdown = "Shutdown";
+}
+
+/// <summary>
+/// Where the service may present video, as reported by the UI.
+/// </summary>
+/// <param name="Mode">Requested presentation mode.</param>
+/// <param name="HostWindow">UI window handle to embed into; 0 means "no host available".</param>
+/// <param name="X">Reserved area's left edge, in physical pixels, relative to the host's client area.</param>
+/// <param name="Y">Reserved area's top edge, same coordinate space.</param>
+/// <param name="Width">Reserved area width in physical pixels; 0 or less means "no area right now".</param>
+/// <param name="Height">Reserved area height in physical pixels.</param>
+/// <remarks>
+/// Coordinates are client-relative and already scaled to physical pixels by the UI, because only the
+/// UI knows its DPI and layout. Keeping the window position out of the contract means the service
+/// never has to translate screen coordinates when the user drags the window.
+/// </remarks>
+public sealed record VideoTarget
+{
+    /// <summary>Embedded but with nothing usable: the UI connects before it has laid out video.</summary>
+    public static VideoTarget Default { get; } = new();
+
+    public DisplayMode Mode { get; init; } = DisplayMode.Fullscreen;
+
+    public long HostWindow { get; init; }
+
+    public int X { get; init; }
+
+    public int Y { get; init; }
+
+    public int Width { get; init; }
+
+    public int Height { get; init; }
+
+    /// <summary>True when there is a window to embed into.</summary>
+    public bool HasHost => HostWindow != 0;
+
+    /// <summary>True when the reserved area is large enough to draw into.</summary>
+    public bool HasArea => Width > 1 && Height > 1;
+
+    /// <summary>True when this target can actually be honoured in embedded mode.</summary>
+    public bool CanEmbed => Mode == DisplayMode.Embedded && HasHost && HasArea;
 }
 
 /// <summary>State reported by the service; UI and protocol layers both project from this.</summary>
@@ -88,6 +136,9 @@ public sealed record IpcMessage
     public int? Volume { get; init; }
 
     public bool? Muted { get; init; }
+
+    /// <summary>Video target carried by <see cref="IpcCommands.SetVideoTarget"/>.</summary>
+    public VideoTarget? VideoTarget { get; init; }
 
     public bool? Success { get; init; }
 

@@ -111,6 +111,7 @@ public sealed class ServiceClient : IAsyncDisposable
         double? seekSeconds = null,
         int? volume = null,
         bool? muted = null,
+        VideoTarget? videoTarget = null,
         CancellationToken cancellationToken = default)
     {
         var pipe = _pipe;
@@ -139,6 +140,7 @@ public sealed class ServiceClient : IAsyncDisposable
                     SeekSeconds = seekSeconds,
                     Volume = volume,
                     Muted = muted,
+                    VideoTarget = videoTarget,
                 },
                 timeout.Token).ConfigureAwait(false);
         }

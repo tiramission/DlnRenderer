@@ -62,7 +62,8 @@ public class IpcServerTests
         string? requestId = null,
         string version = IpcProtocol.Version,
         double? seekSeconds = null,
-        int? volume = null)
+        int? volume = null,
+        VideoTarget? videoTarget = null)
     {
         var id = requestId ?? Guid.NewGuid().ToString("N");
         await IpcFraming.WriteAsync(
@@ -75,6 +76,7 @@ public class IpcServerTests
                 Command = command,
                 SeekSeconds = seekSeconds,
                 Volume = volume,
+                VideoTarget = videoTarget,
             },
             CancellationToken.None);
 
@@ -138,6 +140,62 @@ public class IpcServerTests
         Assert.Equal(40, harness.Renderer.LastVolume);
 
         Assert.Equal(["play", "pause", "stop", "seek:12.5", "volume:40"], harness.Renderer.Calls);
+    }
+
+    [Fact]
+    public async Task Video_target_reaches_the_renderer_and_survives_the_round_trip()
+    {
+        await using var harness = new Harness();
+        harness.Start();
+        await using var client = await harness.ConnectAsync();
+
+        var target = new VideoTarget
+        {
+            Mode = DisplayMode.Embedded,
+            HostWindow = 0x1234,
+            X = 12,
+            Y = 34,
+            Width = 640,
+            Height = 360,
+        };
+
+        var response = await SendAsync(client, IpcCommands.SetVideoTarget, videoTarget: target);
+
+        Assert.True(response.Success);
+        Assert.Equal(target, harness.Renderer.VideoTarget);
+    }
+
+    [Fact]
+    public async Task A_client_disconnecting_hands_presentation_back_to_the_renderer()
+    {
+        await using var harness = new Harness();
+        harness.Start();
+
+        var client = await harness.ConnectAsync();
+        await SendAsync(
+            client,
+            IpcCommands.SetVideoTarget,
+            videoTarget: new VideoTarget
+            {
+                Mode = DisplayMode.Embedded,
+                HostWindow = 0x1234,
+                Width = 320,
+                Height = 180,
+            });
+
+        Assert.NotNull(harness.Renderer.VideoTarget);
+
+        // The UI is gone: a video window left parented to a window that is being destroyed would be
+        // destroyed with it, taking the player's surface along.
+        await client.DisposeAsync();
+
+        var deadline = DateTime.UtcNow + Timeout;
+        while (DateTime.UtcNow < deadline && harness.Renderer.VideoTarget is not null)
+        {
+            await Task.Delay(20);
+        }
+
+        Assert.Null(harness.Renderer.VideoTarget);
     }
 
     [Theory]

@@ -82,6 +82,15 @@ internal sealed class FakeRendererControl : IRendererControl
         return Task.CompletedTask;
     }
 
+    public void SetVideoTarget(VideoTarget? target)
+    {
+        Calls.Add(target is null ? "video-target:null" : $"video-target:{target.Mode}");
+        VideoTarget = target;
+    }
+
+    /// <summary>Last presentation target reported by the UI, or null when it detached.</summary>
+    public VideoTarget? VideoTarget { get; private set; }
+
     public void Publish(RendererSnapshot snapshot)
     {
         _snapshot = snapshot;

@@ -26,6 +26,11 @@ public sealed class SettingsStore
     {
         WriteIndented = true,
         DefaultIgnoreCondition = JsonIgnoreCondition.Never,
+
+        // Enums are written by name: settings.json is a user-visible file, and a bare number for the
+        // display mode would tell them nothing. An unknown name is a parse failure, which Load turns
+        // into defaults - the same treatment every other invalid value already gets.
+        Converters = { new JsonStringEnumConverter() },
     };
 
     private readonly object _gate = new();

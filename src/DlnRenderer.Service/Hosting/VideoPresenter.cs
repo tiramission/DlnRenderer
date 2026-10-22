@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
+using DlnRenderer.Core.Ipc;
+using DlnRenderer.Core.Models;
 
 namespace DlnRenderer.Service.Hosting;
 
@@ -74,6 +76,12 @@ public sealed class VideoPresenter : IAsyncDisposable, IMonitorEventsSink
     private string _presentationState = "hidden";
     private bool _displayChangePending;
     private MonitorEventsListener? _monitorListener;
+
+    /// <summary>Where video may be drawn. Replaced wholesale by <see cref="SetTarget"/>.</summary>
+    private VideoTarget _target = VideoTarget.Default;
+
+    /// <summary>Window this one is currently a child of, or 0 when it is a standalone popup.</summary>
+    private nint _embeddedHost;
 
     // Last measured client size, published for diagnostics.
     private volatile int _clientWidth;
@@ -151,8 +159,40 @@ public sealed class VideoPresenter : IAsyncDisposable, IMonitorEventsSink
     /// repeated player events cannot make the window flicker or re-take the foreground.
     /// </remarks>
     public void ShowFullscreen() => Run(ApplyFullscreen);
-    /// <summary>Shows without repainting the overlay, keeping whatever mode it is in.</summary>
-    public void Show() => ShowFullscreen();
+
+    /// <summary>
+    /// Shows using whatever the current <see cref="VideoTarget"/> asks for: embedded in the UI
+    /// window when it reserved an area, fullscreen otherwise.
+    /// </summary>
+    public void Show() => Run(ShowInMode);
+
+    /// <summary>
+    /// Replaces the presentation target.
+    /// </summary>
+    /// <remarks>
+    /// The mode, the host window and the reserved rectangle travel together because they are only
+    /// meaningful together: an embedded target with no host must fall back to fullscreen, and a
+    /// rectangle that changed while the overlay was hidden must be applied on the next show rather
+    /// than now. Nothing is applied until the window is visible again.
+    /// </remarks>
+    public void SetTarget(VideoTarget target)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        Run(() =>
+        {
+            _target = target;
+            if (_visible)
+            {
+                ShowInMode();
+            }
+        });
+    }
+
+    /// <summary>Current target, for diagnostics and tests.</summary>
+    public VideoTarget Target => _target;
+
+    /// <summary>Host window this presenter is embedded in, or 0 when it is standalone.</summary>
+    public nint EmbeddedHost => _embeddedHost;
 
     /// <summary>
     /// Drops topmost and hides the window; the window and its mpv surface are kept for the next play.
@@ -192,7 +232,7 @@ public sealed class VideoPresenter : IAsyncDisposable, IMonitorEventsSink
             _monitor = 0;
             if (_visible)
             {
-                ApplyFullscreen();
+                ShowInMode();
             }
         });
     }
@@ -342,6 +382,13 @@ public sealed class VideoPresenter : IAsyncDisposable, IMonitorEventsSink
             return;
         }
 
+        // Coming back from embedded: the window is still a child of the UI window, and a child has no
+        // place in the topmost band. Re-parenting to the desktop has to happen before placement.
+        if (_embeddedHost != 0)
+        {
+            DetachFromHost();
+        }
+
         var monitors = MonitorInterop.GetMonitors();
         var current = ReadCurrentBounds();
         var selected = FullscreenGeometry.SelectMonitor(
@@ -408,6 +455,146 @@ public sealed class VideoPresenter : IAsyncDisposable, IMonitorEventsSink
             PlacementError = 0;
         }
     }
+
+    /// <summary>
+    /// Shows the video using the current target: embedded into the UI window, or fullscreen.
+    /// </summary>
+    /// <remarks>
+    /// An embedded target that is missing its host or its rectangle is honoured as fullscreen. That
+    /// is the deliberate failure direction: the alternative is a cast that plays with no picture
+    /// anywhere, which looks like a broken renderer rather than a window that has not laid out yet.
+    /// </remarks>
+    private void ShowInMode()
+    {
+        if (_target.CanEmbed)
+        {
+            ApplyEmbedded(_target);
+            return;
+        }
+
+        ApplyFullscreen();
+    }
+
+    /// <summary>
+    /// Makes this window a child of the UI window and positions it over the reserved area.
+    /// </summary>
+    /// <remarks>
+    /// Re-parenting instead of overlaying a positioned popup is what makes the video behave like part
+    /// of the window: it is clipped by it, moves with it, disappears when it is minimised and is
+    /// destroyed with it. Coordinates are the host's client area, which is also the space a child
+    /// window is positioned in, so nothing has to be translated.
+    /// <para>
+    /// The mpv surface is a child of this window, so it follows without being touched - no player
+    /// restart and no new <c>wid</c> is needed when the mode changes.
+    /// </para>
+    /// </remarks>
+    private void ApplyEmbedded(VideoTarget target)
+    {
+        if (_window == 0 || _child == 0)
+        {
+            return;
+        }
+
+        var host = (nint)target.HostWindow;
+
+        // The overlay came in topmost. Leave that band *before* re-parenting: once the window is a
+        // child the z-order call is meaningless, and the leftover WS_EX_TOPMOST would put the video
+        // back over every other window the next time it is detached.
+        TopmostWindow.Leave(_window);
+        TopmostApplied = false;
+
+        if (_embeddedHost != host)
+        {
+            if (_embeddedHost != 0)
+            {
+                DetachFromHost();
+            }
+
+            // WS_CHILD before SetParent: the style decides the coordinate space the window lives in,
+            // and setting the parent first would briefly place it at screen coordinates inside the
+            // host's client area.
+            SetStyle(WsChild | WsClipSiblings | WsClipChildren);
+
+            // SetParent returns the previous parent, which is 0 for a window that had none - so
+            // "returned 0" alone means nothing. Only the thread's last error distinguishes success
+            // from failure, and it must be cleared first because every Win32 call leaves one behind.
+            Marshal.SetLastPInvokeError(0);
+            var previous = SetParent(_window, host);
+            if (previous == 0 && Marshal.GetLastPInvokeError() != 0)
+            {
+                // Cross-process parenting can be refused (different integrity level, or a host that
+                // is not a top-level window). Falling back keeps the cast visible.
+                LogPlacementFailure($"SetParent on 0x{host:X} failed", Marshal.GetLastPInvokeError());
+                SetStyle(WsPopup | WsClipSiblings | WsClipChildren);
+                ApplyFullscreen();
+                return;
+            }
+
+            _embeddedHost = host;
+        }
+
+        _monitor = 0;
+        Volatile.Write(ref _presentationState, "embedded");
+
+        // The child is hidden while nothing is presented; showing it first means the WM_SIZE that
+        // follows resizes a visible surface rather than a hidden one.
+        _ = ShowWindow(_child, SwShow);
+
+        // Not topmost and not activatable: inside the application window the user's own z-order and
+        // focus must be left alone.
+        _ = SetWindowPos(
+            _window,
+            0,
+            target.X,
+            target.Y,
+            Math.Max(1, target.Width),
+            Math.Max(1, target.Height),
+            SwpShowWindow | SwpFrameChanged | SwpNoActivate | SwpNoZOrder);
+
+        _visible = true;
+    }
+
+    /// <summary>
+    /// Returns the window to a standalone popup so it survives the UI window closing.
+    /// </summary>
+    /// <remarks>
+    /// A child window is destroyed by Windows when its parent goes away, which would leave the player
+    /// drawing into a dead HWND. Every path that leaves embedded mode therefore detaches first -
+    /// including the one triggered by the UI disconnecting.
+    /// </remarks>
+    private void DetachFromHost()
+    {
+        if (_window == 0 || _embeddedHost == 0)
+        {
+            _embeddedHost = 0;
+            return;
+        }
+
+        // Style first: a WS_CHILD window cannot be re-parented to the desktop and keep behaving as a
+        // popup, because the desktop is not a parent window.
+        SetStyle(WsPopup | WsClipSiblings | WsClipChildren);
+        _ = SetParent(_window, 0);
+        _embeddedHost = 0;
+
+        // The rectangle is meaningless now (1x1 keeps it off screen without destroying it); the next
+        // fullscreen show recomputes it from the monitors.
+        _ = SetWindowPos(_window, 0, 0, 0, 1, 1, SwpNoZOrder | SwpNoActivate);
+    }
+
+    private void SetStyle(int style)
+        => _ = SetWindowLongPtr(_window, GwlStyle, (nint)style);
+
+    /// <summary>Win32 error from the last failed placement, logged once per attempt. Diagnostics only.</summary>
+    private void LogPlacementFailure(string what, int error)
+    {
+        PlacementError = error;
+        Volatile.Write(ref _lastPlacementFailure, $"{what} (Win32 error {error})");
+    }
+
+    private string? _lastPlacementFailure;
+
+    /// <summary>Description of the last placement failure, or null. Diagnostics only.</summary>
+    public string? LastPlacementFailure => Volatile.Read(ref _lastPlacementFailure);
 
     /// <summary>Win32 error from the last failed fullscreen placement, or 0. Diagnostics only.</summary>
     public int PlacementError { get; private set; }
@@ -601,7 +788,7 @@ public sealed class VideoPresenter : IAsyncDisposable, IMonitorEventsSink
                 if (_visible)
                 {
                     _monitor = 0;
-                    ApplyFullscreen();
+                    ShowInMode();
                 }
 
                 return 0;
@@ -663,6 +850,7 @@ public sealed class VideoPresenter : IAsyncDisposable, IMonitorEventsSink
     private const long WsExTopmost = 0x00000008L;
     private const int WsExToolWindow = 0x00000080;
     private const int GwlExStyle = -20;
+    private const int GwlStyle = -16;
     private const uint WmTimer = 0x0113;
     private const nint DisplayChangeTimer = 1;
 
@@ -767,6 +955,10 @@ public sealed class VideoPresenter : IAsyncDisposable, IMonitorEventsSink
 
     [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
     private static extern nint SetWindowLongPtr(nint hwnd, int index, nint value);
+
+    /// <summary>Re-parents a window. Works across processes, which is how embedding is implemented.</summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern nint SetParent(nint child, nint newParent);
 
     [DllImport("user32.dll")]
     private static extern nint SetTimer(nint hwnd, nint timerId, uint interval, nint procedure);

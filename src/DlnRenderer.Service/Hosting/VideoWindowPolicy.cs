@@ -9,12 +9,15 @@ public enum VideoWindowMode
     /// <summary>Window hidden; nothing is being presented.</summary>
     Hidden,
 
-    /// <summary>Window shown as a borderless fullscreen, always-on-top overlay.</summary>
-    Fullscreen,
+    /// <summary>
+    /// The picture belongs on screen. Where it goes - a fullscreen overlay or a rectangle inside the
+    /// application window - is the presenter's decision, taken from the target the UI reported.
+    /// </summary>
+    Shown,
 }
 
 /// <summary>
-/// Decides whether the presentation window is visible, and how.
+/// Decides whether the presentation window is visible.
 /// </summary>
 /// <remarks>
 /// This is pure policy with no Win32 dependency so it can be tested exhaustively. The window
@@ -91,6 +94,6 @@ public static class VideoWindowPolicy
         // Playing, Paused, Buffering and Transitioning all keep the overlay up. Hiding on Pause would
         // make a paused cast look like it had been dismissed, and hiding while buffering would
         // flash the desktop in the middle of a stutter.
-        return VideoWindowMode.Fullscreen;
+        return VideoWindowMode.Shown;
     }
 }

@@ -1,5 +1,7 @@
 namespace DlnRenderer.Core.Settings;
 
+using DlnRenderer.Core.Models;
+
 /// <summary>
 /// User-facing renderer settings, persisted as JSON under <c>%LOCALAPPDATA%\DlnRenderer</c>.
 /// </summary>
@@ -27,6 +29,12 @@ public sealed record RendererSettings
 
     /// <summary>Passed to libmpv as <c>hwdec=auto-safe</c>; disabling forces software decoding.</summary>
     public bool HardwareDecoding { get; init; } = true;
+
+    /// <summary>
+    /// Where a cast is shown. <see cref="DisplayMode.Fullscreen"/> keeps the standalone overlay;
+    /// <see cref="DisplayMode.Embedded"/> draws into the area the application window reserves.
+    /// </summary>
+    public DisplayMode DisplayMode { get; init; } = DisplayMode.Fullscreen;
 
     public static RendererSettings Default { get; } = new();
 

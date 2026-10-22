@@ -206,12 +206,22 @@ public sealed class IpcServer : IAsyncDisposable
         finally
         {
             client.Dispose();
+            int remaining;
             lock (_clients)
             {
                 _clients.Remove(client);
+                remaining = _clients.Count;
             }
 
             _log.Write($"ipc client disconnected ({ConnectedClients} active)");
+
+            if (remaining == 0)
+            {
+                // No UI left to embed into. Detaching before the UI window is destroyed keeps the
+                // player's surface alive: a child window is destroyed with its parent, and mpv would
+                // then be drawing into a dead HWND.
+                _session.SetVideoTarget(null);
+            }
         }
     }
 
@@ -273,6 +283,11 @@ public sealed class IpcServer : IAsyncDisposable
                     }
 
                     await _session.SetMuteAsync(muted, _cts.Token).ConfigureAwait(false);
+                    break;
+
+                case IpcCommands.SetVideoTarget:
+                    // Where the picture goes. Applied at once, because the user may be watching.
+                    _session.SetVideoTarget(request.VideoTarget);
                     break;
 
                 case "Shutdown":

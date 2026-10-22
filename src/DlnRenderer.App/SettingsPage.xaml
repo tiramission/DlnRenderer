@@ -152,6 +152,44 @@
                     </StackPanel>
                 </Border>
 
+                <!--  Where the picture goes  -->
+                <Border Style="{StaticResource SettingsCardStyle}">
+                    <StackPanel>
+                        <StackPanel Padding="20,16,20,12" Spacing="2">
+                            <TextBlock Style="{StaticResource CardTitleStyle}" Text="投屏显示" />
+                            <TextBlock Style="{StaticResource SecondaryTextStyle}" Text="保存后立即生效，不需要重启服务。" />
+                        </StackPanel>
+                        <Border Style="{StaticResource DividerStyle}" />
+
+                        <Grid Padding="20,14" ColumnSpacing="20">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Style="{StaticResource RowTitleStyle}" Text="显示方式" />
+                                <TextBlock Style="{StaticResource RowDescriptionStyle}" Text="全屏：像独立播放器一样铺满一块屏幕，界面关到托盘也能看。UI 窗口：画面嵌在主页预留的区域里，跟随窗口移动和缩放。" />
+                            </StackPanel>
+                            <StackPanel
+                                Grid.Column="1"
+                                VerticalAlignment="Center"
+                                Orientation="Horizontal"
+                                Spacing="12">
+                                <RadioButton
+                                    AutomationProperties.Name="全屏"
+                                    Content="全屏"
+                                    GroupName="DisplayMode"
+                                    IsChecked="{x:Bind ViewModel.IsFullscreenMode, Mode=TwoWay}" />
+                                <RadioButton
+                                    AutomationProperties.Name="UI 窗口"
+                                    Content="UI 窗口"
+                                    GroupName="DisplayMode"
+                                    IsChecked="{x:Bind ViewModel.IsEmbeddedMode, Mode=TwoWay}" />
+                            </StackPanel>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
                 <!--  Playback  -->
                 <Border Style="{StaticResource SettingsCardStyle}">
                     <StackPanel>

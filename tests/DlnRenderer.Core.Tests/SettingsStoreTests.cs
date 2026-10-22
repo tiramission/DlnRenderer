@@ -1,3 +1,4 @@
+using DlnRenderer.Core.Models;
 using DlnRenderer.Core.Settings;
 
 namespace DlnRenderer.Core.Tests;
@@ -70,6 +71,35 @@ public sealed class SettingsStoreTests : IDisposable
         var json = File.ReadAllText(SettingsPath);
         Assert.Contains("\"deviceName\": \"Bedroom\"", json, StringComparison.Ordinal);
         Assert.Contains("\"closeToTray\": true", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Display_mode_round_trips_and_is_written_by_name()
+    {
+        var store = new SettingsStore(SettingsPath);
+        Assert.True(store.Save(new RendererSettings { DisplayMode = DisplayMode.Embedded }).Success);
+
+        // A settings file is user-visible; a bare enum ordinal would tell them nothing.
+        Assert.Contains("\"displayMode\": \"Embedded\"", File.ReadAllText(SettingsPath), StringComparison.Ordinal);
+        Assert.Equal(DisplayMode.Embedded, store.Load().DisplayMode);
+
+        Assert.True(store.Save(new RendererSettings { DisplayMode = DisplayMode.Fullscreen }).Success);
+        Assert.Equal(DisplayMode.Fullscreen, store.Load().DisplayMode);
+    }
+
+    [Fact]
+    public void A_settings_file_written_before_the_mode_existed_still_loads()
+    {
+        // Every shipped build before this one wrote no displayMode at all; those files must keep
+        // working and keep their other values.
+        File.WriteAllText(
+            SettingsPath,
+            "{\"deviceName\":\"Study\",\"startWithWindows\":false,\"closeToTray\":true,\"hardwareDecoding\":true}");
+
+        var settings = new SettingsStore(SettingsPath).Load();
+
+        Assert.Equal("Study", settings.DeviceName);
+        Assert.Equal(DisplayMode.Fullscreen, settings.DisplayMode);
     }
 
     [Theory]

@@ -46,6 +46,9 @@ public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsy
     /// <summary>1 while a background reload-and-seek is in flight; guards against a pile-up.</summary>
     private int _backgroundSeekRunning;
 
+    /// <summary>Where video may be presented; replaced by the UI over IPC.</summary>
+    private VideoTarget _videoTarget = VideoTarget.Default;
+
     public RendererSession(MpvPlayer player, VideoPresenter? presenter, DlnaOptions options, Action<string> log)
     {
         _player = player;
@@ -99,6 +102,53 @@ public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsy
     public bool DiscoveryActive { get; set; }
 
     public string? ControlUrl { get; set; }
+
+    /// <summary>
+    /// Where video may be shown, as last reported by the UI. Also drives the presentation the next
+    /// time a status change asks for the picture to come up.
+    /// </summary>
+    public VideoTarget VideoTarget
+    {
+        get
+        {
+            lock (_stateGate)
+            {
+                return _videoTarget;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Applies a new presentation target and re-evaluates visibility immediately.
+    /// </summary>
+    /// <remarks>
+    /// Re-evaluating matters in both directions: switching to embedded while a video is playing must
+    /// move the picture into the window at once, and switching back to fullscreen must not wait for
+    /// the next player event.
+    /// </remarks>
+    public void SetVideoTarget(VideoTarget? target)
+    {
+        var effective = target ?? VideoTarget.Default;
+
+        PlaybackStatus status;
+        bool requested;
+        bool playbackStarted;
+        bool lastKnownVideo;
+        lock (_stateGate)
+        {
+            _videoTarget = effective;
+            status = _status;
+            requested = _uri is not null;
+            playbackStarted = _playbackStarted;
+            lastKnownVideo = _lastKnownVideo;
+        }
+
+        _presenter?.SetTarget(effective);
+
+        PlayerVisibility(
+            VideoWindowPolicy.Decide(status, requested, lastKnownVideo, playbackStarted)
+                == VideoWindowMode.Shown);
+    }
 
     public RendererSnapshot GetSnapshot()
     {
@@ -589,7 +639,7 @@ public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsy
         // and treat the event as stale when it describes media the player is no longer serving.
         PlayerVisibility(
             VideoWindowPolicy.Decide(status, requested, _lastKnownVideo, playbackStarted)
-                == VideoWindowMode.Fullscreen);
+                == VideoWindowMode.Shown);
 
         _log($"player status {status.State} kind={status.MediaKind} pos={status.Position.TotalSeconds:F1} error={status.ErrorMessage}");
         SnapshotChanged?.Invoke(GetSnapshot());
@@ -625,7 +675,9 @@ public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsy
 
         if (show)
         {
-            _presenter.ShowFullscreen();
+            // Mode-aware: the presenter embeds into the UI window when the target says so, and
+            // falls back to fullscreen when it cannot.
+            _presenter.Show();
             _log($"video presenter {_presenter.PresentationState} on monitor 0x{_presenter.MonitorHandle:X}");
         }
         else
