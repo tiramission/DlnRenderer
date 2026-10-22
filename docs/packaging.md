@@ -169,21 +169,23 @@ Import-Certificate -FilePath .\DlnRenderer-dev.cer -CertStoreLocation Cert:\Loca
 Add-AppxPackage -Path .\DlnRenderer-0.1.0-win-x64.msix
 ```
 
-### 7.5 v0.1.0 实测（2026-10-22，CI run `39713113975`）
+### 7.5 实测（2026-10-22）
+
+证书固定在 `8781E2D1…` 之后，连续发了 `v0.1.0`（run `39714170910`）与 `v0.2.0`（run `39714549806`），
+两次均全部步骤通过、零 annotation。
 
 | 检查 | 结果 |
 | --- | --- |
-| workflow 全部步骤 | ✅，**零 annotation** |
-| GitHub Release `v0.1.0`（prerelease） | ✅ 6 个资产 |
-| 下载后 `sha256sum -c` 重算 | ✅ `OK`；GitHub 自报的 asset digest 也一致 |
-| MSIX 签名者指纹 = 发布 `.cer` 指纹 | ✅ `9C8E3007…` |
+| 两个版本签名者指纹 | ✅ 均为 `8781E2D1…` |
+| `DlnRenderer-dev.cer` 哈希跨版本 | ✅ 两版均为 `c2c4554f…`，与仓库内 `devcert.cer` 一致 |
+| 下载后 `sha256sum -c` 重算 | ✅ `OK`，与 GitHub 自报的 asset digest 一致 |
 | 信任 `.cer` 后签名状态 | ✅ `UnknownError` → `Valid` |
-| `Add-AppxPackage` 安装**发布后的**包 | ✅ `Status: Ok`，版本 `0.1.0.0` |
+| `Add-AppxPackage` 安装发布包 | ✅ `Status: Ok` |
+| **0.1.0 → 0.2.0 原地升级**（不先卸载） | ✅ 安装后版本变为 `0.2.0.0`，`Status: Ok` |
+| 发布说明 markdown 渲染 | ✅ 行内代码与代码块正常（不再出现 ```` `` ````） |
 | 清理（卸载 + 移除证书信任） | ✅ 残留包 0，根存储中 AppPublisher 证书 0 |
-| 绿色包 | ✅ 211.1 MB，86 个文件，含 libmpv 与法律文件 |
 
-每次运行都会生成**新的**证书（指纹随运行变化），所以上面的指纹只对应那一次 run；
-用到别的 run 的资产时必须用那次自带的 `.cer`。
+「原地升级」这一项是固定证书存在的主要理由：如果用每次新生成的证书，上表这一行必然失败。
 
 **未覆盖**：干净机器（无 .NET 10 桌面运行时、无 Windows App Runtime）的安装体验；
 ARM64；CA 签名。发布说明里已如实声明这些未知项。
