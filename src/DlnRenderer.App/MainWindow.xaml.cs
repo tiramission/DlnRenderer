@@ -35,20 +35,30 @@ public sealed partial class MainWindow : Window
         AppWindow.Closing += OnClosing;
         AppWindow.Changed += OnAppWindowChanged;
 
+        // Escape leaves fullscreen when the window has the keyboard. The floating bar is the primary
+        // way out (it appears on any mouse move), but a keyboard exit costs nothing and is what
+        // every fullscreen player does.
+        var escape = new Microsoft.UI.Xaml.Input.KeyboardAccelerator
+        {
+            Key = Windows.System.VirtualKey.Escape,
+        };
+        escape.Invoked += (_, args) =>
+        {
+            if (!_fullScreen)
+            {
+                return;
+            }
+
+            SetFullScreen(false);
+            args.Handled = true;
+        };
+        RootGrid.KeyboardAccelerators.Add(escape);
+
         RootFrame.Navigate(typeof(MainPage));
         Navigation.SelectedItem = Navigation.MenuItems[0];
     }
 
     public bool IsFullScreen => _fullScreen;
-
-    /// <summary>
-    /// Height, in DIPs, that an embedded cast must leave free at the top for the title bar.
-    /// </summary>
-    /// <remarks>
-    /// Zero in fullscreen: the bar is collapsed there so the picture really covers the screen, and
-    /// the floating transport bar is what gets the user back out.
-    /// </remarks>
-    public double TitleBarHeight => _fullScreen ? 0 : AppTitleBar.ActualHeight;
 
     /// <summary>Enters or leaves the borderless fullscreen presenter.</summary>
     public void SetFullScreen(bool fullScreen)
@@ -71,9 +81,20 @@ public sealed partial class MainWindow : Window
     /// Shows or hides the floating transport bar. It is only ever shown while the window itself is
     /// visible, because hiding the window does not hide an owned window on its own.
     /// </summary>
+    /// <remarks>
+    /// Losing the bar means the cast is over - stopped, or the page went away - so fullscreen is
+    /// given up at the same time. Staying fullscreen with no controls and no picture leaves the user
+    /// with an empty window and no obvious way back.
+    /// </remarks>
     public void SetTransportOverlayVisible(bool visible)
     {
         _overlayWanted = visible;
+
+        if (!visible)
+        {
+            SetFullScreen(false);
+        }
+
         ApplyOverlay();
     }
 

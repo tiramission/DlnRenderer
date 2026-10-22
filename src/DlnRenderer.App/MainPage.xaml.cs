@@ -4,6 +4,7 @@ using DlnRenderer.Services;
 using DlnRenderer.ViewModels;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Windows.Foundation;
 
 namespace DlnRenderer;
 
@@ -157,11 +158,13 @@ public sealed partial class MainPage : Page
     }
 
     /// <summary>
-    /// The rectangle an embedded cast may cover: the whole window below the title bar.
+    /// The rectangle an embedded cast may cover.
     /// </summary>
     /// <remarks>
-    /// The title bar stays free so the window can still be moved and closed while a film is playing,
-    /// and it collapses in fullscreen, at which point the picture really does cover everything.
+    /// In a window the picture takes over the page's own area - the content region inside the
+    /// navigation view - so the title bar and the navigation pane stay usable and the user can still
+    /// reach settings mid-film. In fullscreen the whole client area is used, because there is nothing
+    /// left worth keeping.
     /// </remarks>
     private VideoTarget BuildVideoTarget()
     {
@@ -179,9 +182,28 @@ public sealed partial class MainPage : Page
         }
 
         var scale = root.RasterizationScale;
-        var titleBar = App.MainWindow?.TitleBarHeight ?? 0;
-        var width = root.Size.Width;
-        var height = Math.Max(0, root.Size.Height - titleBar);
+        double left;
+        double top;
+        double width;
+        double height;
+
+        if (App.MainWindow?.IsFullScreen == true)
+        {
+            left = 0;
+            top = 0;
+            width = root.Size.Width;
+            height = root.Size.Height;
+        }
+        else
+        {
+            // The page's own bounds already exclude the title bar and the navigation pane, and they
+            // follow any layout change without the page having to know the window's structure.
+            var bounds = TransformToVisual(null).TransformBounds(new Rect(0, 0, ActualWidth, ActualHeight));
+            left = bounds.X;
+            top = bounds.Y;
+            width = bounds.Width;
+            height = bounds.Height;
+        }
 
         if (width < 2 || height < 2)
         {
@@ -192,8 +214,8 @@ public sealed partial class MainPage : Page
         {
             Mode = mode,
             HostWindow = (long)App.WindowHandle,
-            X = 0,
-            Y = (int)Math.Round(titleBar * scale),
+            X = (int)Math.Round(left * scale),
+            Y = (int)Math.Round(top * scale),
             Width = (int)Math.Round(width * scale),
             Height = (int)Math.Round(height * scale),
         };

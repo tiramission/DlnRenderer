@@ -809,10 +809,14 @@ public sealed class VideoPresenter : IAsyncDisposable, IMonitorEventsSink
 
             case WmKeyDown:
             case WmSysKeyDown:
-                // Escape leaves the overlay, matching every other video player. Everything else,
-                // including Alt+Tab and the Win key, is passed to DefWindowProc so Windows keeps
+                // Escape leaves the standalone overlay, matching every other video player. Everything
+                // else, including Alt+Tab and the Win key, is passed to DefWindowProc so Windows keeps
                 // working normally.
-                if ((int)wParam == VkEscape)
+                //
+                // Embedded is the exception: the picture is part of the application window, and
+                // tearing it down behind the session's back would make it reappear on the next status
+                // event. The UI owns the keys there - its floating bar carries the exit.
+                if ((int)wParam == VkEscape && _embeddedHost == 0)
                 {
                     ApplyHidden();
                     return 0;
