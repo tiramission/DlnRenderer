@@ -33,6 +33,23 @@ Then install without elevation:
 Add-AppxPackage -Path DlnRenderer-{{VERSION}}-win-x64.msix
 ```
 
+### Upgrading from an older version
+
+**Restart the background service after upgrading.** The windowed app and the background service are
+two separate executables, and they must be the same build. An older service ignores message fields it
+does not know about and refuses a newer protocol version, which shows up as a problem that was
+supposedly fixed coming back, or as a cast behaving differently from what the release notes say.
+
+After upgrading, open Settings in the app and use **Restart background service** — or simply quit the
+app and start it again. If the two builds disagree, the app says so in its status bar.
+
+The portable installer stops the old service before overwriting it, so it usually takes care of this
+by itself. The MSIX channel cannot stop a running process during an upgrade, so there it is a manual
+step: an old service left running is why a fresh UI can appear to be broken.
+
+Two refusals are by design, not defects: reinstalling the **same** version is rejected
+(`0x80073CFB`), and installing an **older** version over a newer one is rejected (`0x80073D06`).
+
 ### Verify
 
 Every asset is listed below and in `SHA256SUMS-assets.txt`. To check a downloaded file:
