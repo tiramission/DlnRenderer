@@ -47,6 +47,7 @@ public sealed class MainPageViewModel : ObservableObject, IDisposable
     private string _errorText = string.Empty;
     private bool _hasMedia;
     private bool _isPlaying;
+    private bool _showsVideo;
     private bool _isConnected;
     private ImageSource? _coverImage;
     private Uri? _coverUri;
@@ -95,6 +96,16 @@ public sealed class MainPageViewModel : ObservableObject, IDisposable
     public bool IsIdle => !HasMedia;
 
     public bool IsPlaying { get => _isPlaying; private set => SetProperty(ref _isPlaying, value); }
+
+    /// <summary>
+    /// True while a video is being presented, i.e. while the renderer is drawing a picture somewhere.
+    /// </summary>
+    /// <remarks>
+    /// Used to show and hide the floating transport bar that sits over an embedded cast. It is
+    /// deliberately independent of the display mode: the mode decides where the picture goes, this
+    /// decides whether there is one.
+    /// </remarks>
+    public bool ShowsVideo { get => _showsVideo; private set => SetProperty(ref _showsVideo, value); }
 
     public bool IsConnected { get => _isConnected; private set => SetProperty(ref _isConnected, value); }
 
@@ -254,6 +265,12 @@ public sealed class MainPageViewModel : ObservableObject, IDisposable
 
         HasMedia = media is not null;
         IsPlaying = status.State == PlaybackState.Playing;
+
+        // Mirrors VideoWindowPolicy on the service side: the picture is on screen from the moment a
+        // video starts until Stop or an error. The page uses it to decide whether the floating
+        // transport bar belongs over the window.
+        ShowsVideo = status.MediaKind == MediaKind.Video
+            && status.State is not (PlaybackState.Stopped or PlaybackState.Error);
 
         (StatusText, StatusGlyph) = status.State switch
         {

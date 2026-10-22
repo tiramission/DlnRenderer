@@ -4,7 +4,6 @@ using DlnRenderer.Services;
 using DlnRenderer.ViewModels;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Windows.Foundation;
 
 namespace DlnRenderer;
 
@@ -13,10 +12,14 @@ namespace DlnRenderer;
 /// pushed state and forwards transport commands over the local pipe.
 /// </summary>
 /// <remarks>
-/// This page also owns the geometry of embedded video: it reserves a rectangle and tells the service
-/// where that rectangle is, in physical pixels relative to the window's client area. The service
-/// then parents its video window into this window. Reporting coordinates in client space is what
-/// keeps the service out of DPI maths - only the UI knows its scale factor and its layout.
+/// In "UI window" mode the page also owns the geometry contract: it tells the service that the video
+/// may cover the whole window below the title bar, in physical pixels. Only the UI knows its DPI and
+/// how much room the title bar takes, so the service never has to guess.
+/// <para>
+/// The page cannot draw controls over that picture - a Win32 child window is always painted above
+/// its parent's XAML - so the transport bar lives in <see cref="TransportOverlayWindow"/> and this
+/// page only decides when it should be visible.
+/// </para>
 /// </remarks>
 public sealed partial class MainPage : Page
 {
@@ -34,6 +37,7 @@ public sealed partial class MainPage : Page
         InitializeComponent();
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
+        SizeChanged += OnPageSizeChanged;
         ViewModel.PropertyChanged += OnViewModelPropertyChanged;
     }
 
@@ -46,9 +50,7 @@ public sealed partial class MainPage : Page
 
         _initialized = true;
 
-        ApplyDisplayMode();
-
-        if (VideoSurface.XamlRoot is { } root)
+        if (XamlRoot is { } root)
         {
             // A DPI change (dragging the window to another monitor) moves the rectangle in physical
             // pixels without changing any layout size, so no SizeChanged would fire.
@@ -75,6 +77,18 @@ public sealed partial class MainPage : Page
         // The service may still be starting when the first report was sent; repeat once the
         // connection is up so a cast that starts immediately still lands in the window.
         ReportVideoTarget(force: true);
+        UpdateTransportOverlay();
+
+        // The title bar's height is what the picture must leave free, and it is only known after the
+        // first layout pass. One extra report once that pass has happened keeps the first cast of a
+        // session from covering the window controls.
+        LayoutUpdated += OnFirstLayoutUpdated;
+    }
+
+    private void OnFirstLayoutUpdated(object? sender, object e)
+    {
+        LayoutUpdated -= OnFirstLayoutUpdated;
+        ReportVideoTarget(force: true);
     }
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
@@ -83,10 +97,12 @@ public sealed partial class MainPage : Page
         // visit and keep updating a view nobody can see.
         ViewModel.PropertyChanged -= OnViewModelPropertyChanged;
 
-        if (VideoSurface.XamlRoot is { } root)
+        if (XamlRoot is { } root)
         {
             root.Changed -= OnXamlRootChanged;
         }
+
+        App.MainWindow?.SetTransportOverlayVisible(false);
 
         // The rectangle this page reserved is gone. Sending a host-less target makes the service
         // detach and fall back to its own window instead of leaving a child window floating over a
@@ -96,18 +112,18 @@ public sealed partial class MainPage : Page
         ViewModel.Dispose();
     }
 
-    /// <summary>Shows or collapses the reserved area to match the configured display mode.</summary>
-    private void ApplyDisplayMode()
-    {
-        var embedded = App.Settings.DisplayMode == DisplayMode.Embedded;
-
-        VideoRow.Height = embedded ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
-        VideoSurface.Visibility = embedded ? Visibility.Visible : Visibility.Collapsed;
-    }
-
-    private void OnVideoSurfaceSizeChanged(object sender, SizeChangedEventArgs e) => ReportVideoTarget();
+    private void OnPageSizeChanged(object sender, SizeChangedEventArgs e) => ReportVideoTarget();
 
     private void OnXamlRootChanged(XamlRoot sender, XamlRootChangedEventArgs args) => ReportVideoTarget(force: true);
+
+    /// <summary>
+    /// Shows the floating transport bar while an embedded cast has a picture on screen.
+    /// </summary>
+    private void UpdateTransportOverlay()
+    {
+        var embedded = App.Settings.DisplayMode == DisplayMode.Embedded;
+        App.MainWindow?.SetTransportOverlayVisible(embedded && ViewModel.ShowsVideo);
+    }
 
     /// <summary>Reports the current reserved rectangle to the service, if it changed.</summary>
     private void ReportVideoTarget(bool force = false)
@@ -140,39 +156,46 @@ public sealed partial class MainPage : Page
         }
     }
 
+    /// <summary>
+    /// The rectangle an embedded cast may cover: the whole window below the title bar.
+    /// </summary>
+    /// <remarks>
+    /// The title bar stays free so the window can still be moved and closed while a film is playing,
+    /// and it collapses in fullscreen, at which point the picture really does cover everything.
+    /// </remarks>
     private VideoTarget BuildVideoTarget()
     {
         var mode = App.Settings.DisplayMode;
 
-        if (mode != DisplayMode.Embedded || VideoSurface.Visibility != Visibility.Visible)
+        if (mode != DisplayMode.Embedded)
         {
             return new VideoTarget { Mode = mode };
         }
 
-        var width = VideoSurface.ActualWidth;
-        var height = VideoSurface.ActualHeight;
-        var root = VideoSurface.XamlRoot;
-
-        // Before the first layout pass there is no rectangle to report; the host is still sent so the
-        // service can tell "not laid out yet" from "no UI at all".
-        if (root is null || width < 2 || height < 2)
+        var root = XamlRoot;
+        if (root is null)
         {
             return new VideoTarget { Mode = mode, HostWindow = (long)App.WindowHandle };
         }
 
         var scale = root.RasterizationScale;
-        var bounds = VideoSurface
-            .TransformToVisual(null)
-            .TransformBounds(new Rect(0, 0, width, height));
+        var titleBar = App.MainWindow?.TitleBarHeight ?? 0;
+        var width = root.Size.Width;
+        var height = Math.Max(0, root.Size.Height - titleBar);
+
+        if (width < 2 || height < 2)
+        {
+            return new VideoTarget { Mode = mode, HostWindow = (long)App.WindowHandle };
+        }
 
         return new VideoTarget
         {
             Mode = mode,
             HostWindow = (long)App.WindowHandle,
-            X = (int)Math.Round(bounds.X * scale),
-            Y = (int)Math.Round(bounds.Y * scale),
-            Width = Math.Max(0, (int)Math.Round(bounds.Width * scale)),
-            Height = Math.Max(0, (int)Math.Round(bounds.Height * scale)),
+            X = 0,
+            Y = (int)Math.Round(titleBar * scale),
+            Width = (int)Math.Round(width * scale),
+            Height = (int)Math.Round(height * scale),
         };
     }
 
@@ -222,6 +245,9 @@ public sealed partial class MainPage : Page
                 _suppressVolumeSync = true;
                 VolumeSlider.Value = ViewModel.Volume;
                 _suppressVolumeSync = false;
+                break;
+            case nameof(MainPageViewModel.ShowsVideo):
+                UpdateTransportOverlay();
                 break;
         }
     }

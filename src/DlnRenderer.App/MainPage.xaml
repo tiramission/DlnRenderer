@@ -11,9 +11,7 @@
     <Grid Padding="24" RowSpacing="16">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
-            <!--  Video surface: the service draws into this rectangle in "UI window" mode.  -->
-            <RowDefinition x:Name="VideoRow" Height="0" />
-            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
@@ -26,33 +24,12 @@
             Severity="{x:Bind ViewModel.ServiceSeverity, Mode=OneWay}" />
 
         <!--
-            The video is a native child window owned by the service, drawn on top of this rectangle.
-            Everything here is therefore a backdrop that is only visible while nothing is cast, or
-            when the renderer fell back to fullscreen because the UI is not showing this page.
+            In "UI window" mode the service draws the picture over this whole window, below the
+            title bar, and a floating transport bar (its own window) sits on top. This page is what
+            the user sees before the first cast and after the last one, so it keeps its normal
+            layout; nothing here is a video placeholder.
         -->
-        <Border
-            x:Name="VideoSurface"
-            Grid.Row="1"
-            Background="#FF000000"
-            CornerRadius="8"
-            SizeChanged="OnVideoSurfaceSizeChanged"
-            Visibility="Collapsed">
-            <StackPanel
-                HorizontalAlignment="Center"
-                VerticalAlignment="Center"
-                Spacing="8">
-                <FontIcon
-                    FontSize="28"
-                    Foreground="#FF7A7A7A"
-                    Glyph="&#xE714;" />
-                <TextBlock
-                    HorizontalAlignment="Center"
-                    Foreground="#FF9A9A9A"
-                    Text="投屏画面将显示在这里" />
-            </StackPanel>
-        </Border>
-
-        <Grid Grid.Row="2" ColumnSpacing="24">
+        <Grid Grid.Row="1" ColumnSpacing="24">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
@@ -110,7 +87,7 @@
             </StackPanel>
         </Grid>
 
-        <StackPanel Grid.Row="3" Spacing="12">
+        <StackPanel Grid.Row="2" Spacing="12">
             <Grid ColumnSpacing="12">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
