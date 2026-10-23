@@ -2,6 +2,7 @@ using System.Globalization;
 using CommunityToolkit.Mvvm.ComponentModel;
 using DlnRenderer.Core.Ipc;
 using DlnRenderer.Core.Models;
+using DlnRenderer.Core.Network;
 using DlnRenderer.Services;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml.Controls;
@@ -60,6 +61,7 @@ public sealed class MainPageViewModel : ObservableObject, IDisposable
         _client.SnapshotChanged += OnSnapshotChanged;
         _client.Faulted += OnClientFaulted;
         _client.RequestRejected += OnRequestRejected;
+        App.Firewall.Changed += OnFirewallChanged;
     }
 
     /// <summary>A refused command is shown, but it does not change the connection state.</summary>
@@ -114,6 +116,36 @@ public sealed class MainPageViewModel : ObservableObject, IDisposable
     public bool ShowsVideo { get => _showsVideo; private set => SetProperty(ref _showsVideo, value); }
 
     public bool IsConnected { get => _isConnected; private set => SetProperty(ref _isConnected, value); }
+
+    /// <summary>
+    /// True when the service is connected but the Windows firewall does not let control points reach
+    /// it: discovery silently fails, which from the user's side is indistinguishable from a crash.
+    /// </summary>
+    public bool ShowsFirewallWarning => IsConnected && App.Firewall.Exposure.NeedsAttention;
+
+    /// <summary>Names the ports that are not open, so the fix is obvious without reading logs.</summary>
+    public string FirewallWarningText
+    {
+        get
+        {
+            var exposure = App.Firewall.Exposure;
+            var ports = new List<string>(2);
+            if (exposure.Ssdp is FirewallPortState.Missing or FirewallPortState.ProfileBlocked)
+            {
+                ports.Add($"UDP {FirewallCoverage.SsdpPort}");
+            }
+
+            if (exposure.Http is FirewallPortState.Missing or FirewallPortState.ProfileBlocked)
+            {
+                ports.Add($"TCP {exposure.HttpPort}");
+            }
+
+            var list = string.Join(" / ", ports);
+            return exposure.IsProfileRestricted
+                ? $"防火墙未对当前网络放行 {list}：规则只对“专用/域”网络生效，手机在“公用”网络上发现不了这台电脑。"
+                : $"防火墙未放行 {list}：手机等控制端可能发现不了这台电脑。可在设置页一键放行。";
+        }
+    }
 
     /// <summary>Cover art from the control point's DIDL metadata, null when it supplied none.</summary>
     public ImageSource? CoverImage { get => _coverImage; private set => SetProperty(ref _coverImage, value); }
@@ -175,6 +207,15 @@ public sealed class MainPageViewModel : ObservableObject, IDisposable
     {
         // Raised on the pipe thread: never touch XAML from here.
         _dispatcher.TryEnqueue(() => ApplySnapshot(snapshot));
+    }
+
+    private void OnFirewallChanged(object? sender, EventArgs e)
+        => _dispatcher.TryEnqueue(NotifyFirewallChanged);
+
+    private void NotifyFirewallChanged()
+    {
+        OnPropertyChanged(nameof(ShowsFirewallWarning));
+        OnPropertyChanged(nameof(FirewallWarningText));
     }
 
     private void OnClientFaulted(object? sender, string reason)
@@ -255,6 +296,7 @@ public sealed class MainPageViewModel : ObservableObject, IDisposable
         ServiceBuildMismatch = false;
         ServiceText = connected ? "后台服务：已连接" : "后台服务：未连接";
         OnPropertyChanged(nameof(ServiceSeverity));
+        NotifyFirewallChanged();
     }
 
     /// <summary>
@@ -276,6 +318,7 @@ public sealed class MainPageViewModel : ObservableObject, IDisposable
     private void ApplySnapshot(RendererSnapshot snapshot)
     {
         IsConnected = true;
+        NotifyFirewallChanged();
 
         var uiBuild = typeof(MainPageViewModel).Assembly.GetName().Version?.ToString(3);
         ServiceBuildMismatch = snapshot.ServiceBuild is null
@@ -350,9 +393,36 @@ public sealed class MainPageViewModel : ObservableObject, IDisposable
             ReportError(snapshot.LastError);
         }
 
+        RefreshFirewall(snapshot.ControlUrl);
+
         DiagnosticsLog.Write(
             $"snapshot state={status.State} kind={status.MediaKind} pos={status.Position} dur={status.Duration} discovery={snapshot.DiscoveryActive}");
     }
+
+    /// <summary>
+    /// Probes the firewall once the service names its real port, and again if that port changes
+    /// (a service restarted with <c>--http-port</c>).
+    /// </summary>
+    private void RefreshFirewall(string? controlUrl)
+    {
+        var port = PortFromControlUrl(controlUrl);
+        if (port is { } value && value != App.Firewall.HttpPort)
+        {
+            App.Firewall.HttpPort = value;
+            _ = App.Firewall.RefreshAsync();
+            return;
+        }
+
+        if (!App.Firewall.Exposure.IsKnown && !App.Firewall.IsProbing)
+        {
+            _ = App.Firewall.RefreshAsync();
+        }
+    }
+
+    private static int? PortFromControlUrl(string? controlUrl)
+        => Uri.TryCreate(controlUrl, UriKind.Absolute, out var uri) && uri.Port is > 0 and <= 65535
+            ? uri.Port
+            : null;
 
     /// <summary>
     /// Rebuilds the cover image only when the URI actually changed, so a position tick does not
@@ -406,6 +476,7 @@ public sealed class MainPageViewModel : ObservableObject, IDisposable
         _client.SnapshotChanged -= OnSnapshotChanged;
         _client.RequestRejected -= OnRequestRejected;
         _client.Faulted -= OnClientFaulted;
+        App.Firewall.Changed -= OnFirewallChanged;
 
         // Cancelled but not disposed: an in-flight connection attempt may still read the token, and
         // a completed attempt would then observe ObjectDisposedException on the way out.

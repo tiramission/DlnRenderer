@@ -13,7 +13,23 @@ public sealed partial class SettingsPage : Page
     public SettingsPage()
     {
         InitializeComponent();
+        Loaded += OnLoaded;
+        Unloaded += OnUnloaded;
     }
+
+    private async void OnLoaded(object sender, RoutedEventArgs e)
+    {
+        // Fresh answer every visit: the network may have changed since the app started.
+        await ViewModel.RefreshFirewallAsync();
+    }
+
+    private void OnUnloaded(object sender, RoutedEventArgs e) => ViewModel.Dispose();
+
+    private async void OnRefreshFirewallClick(object sender, RoutedEventArgs e)
+        => await ViewModel.RefreshFirewallAsync();
+
+    private async void OnAllowDiscoveryClick(object sender, RoutedEventArgs e)
+        => await ViewModel.AllowDiscoveryAsync();
 
     private async void OnSaveClick(object sender, RoutedEventArgs e)
     {

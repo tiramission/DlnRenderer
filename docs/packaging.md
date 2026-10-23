@@ -79,9 +79,13 @@ SCM 托管的服务运行在 **session 0**，那里没有用户桌面，GPU 交�
 
 ## 5. 已知限制与未验证项
 
-- **防火墙入站规则仍需单独添加。** manifest 的 `internetClientServer` / `privateNetworkClientServer`
-  不创建防火墙规则。绿色包由 `firewall-rules.ps1` 补；MSIX 渠道**没有**安装期钩子能提权加规则，
-  需要用户手动运行 `firewall-rules.ps1`，或在首次运行时由 UI 引导（**未实现**）。
+- **防火墙入站规则不保证自动创建。** manifest 的 `internetClientServer` / `privateNetworkClientServer`
+  不保证生成入站规则（本机上 MSIX 产生了 `AllCapabilities` / `ServerCapability` 形态的规则，但不能当作
+  跨机器保证）。绿色包由 `firewall-rules.ps1` 补；MSIX 渠道没有安装期提权钩子，因此改由界面兜住：
+  设置页「网络与发现」读取本机防火墙策略判断 UDP 1900 / TCP 18090 是否被当前网络放行，缺失时给出
+  一次 UAC 授权的「允许发现」，按与脚本同名的规则创建（TCP 规则在 MSIX 下按包族名限定，绿色包下按
+  exe 路径限定，只对专用/域网络开放）。主页在服务已连接但未放行时会显示警告并可跳到设置页。
+  **检测与脚本生成已用真实策略、真实 cmdlet（`-WhatIf`）验证；真实 UAC 添加未在本机跑过。**
 - **同版本号重装会被拒绝**（`0x80073CFB`）。开发期重打包需先 `Remove-AppxPackage` 再安装；
   发布时必须递增版本号。
 - **依赖的 Windows App Runtime 必须已安装。** 清单声明了对 `Microsoft.WindowsAppRuntime.2 ≥ 2.5.1`

@@ -328,7 +328,7 @@ public sealed class ServiceClient : IAsyncDisposable
     /// Looks for the service next to the app first (packaged/single-folder layout) and then in the
     /// sibling service build output used during development.
     /// </summary>
-    private static string? ResolveServicePath()
+    internal static string? ResolveServicePath()
     {
         const string fileName = "DlnRenderer.Service.exe";
         var baseDirectory = AppContext.BaseDirectory;

@@ -915,6 +915,12 @@ UI 启动时按 `ServiceClient.ResolveServicePath()` 的优先级查找服务：
 防火墙规则、控制端缓存与书签能跨重启生效的前提。`firewall-rules.ps1` 只对专用/域网络放行，
 公网配置文件下不开放。
 
+端口能不能被控制端看到，界面自己回答：`Core/Network/FirewallCoverage` 是纯函数（规则 × 当前网络配置
+→ Covered / Missing / ProfileBlocked），`App/Services/FirewallPolicyReader` 用防火墙的自动化对象读一次
+策略（IDispatch 按名取成员；`Get-NetFirewallRule` 逐条查端口过滤在 ~700 条规则上要 4.7 秒，COM 是几十毫秒），
+`App/Services/FirewallRuleInstaller` 把补齐规则交给一次 UAC 授权下的 PowerShell。读策略失败一律是
+**Unknown 而不是 Blocked**：读不出来时保持安静，不用猜测去打扰已经配好的用户。
+
 ### 16.4 停止顺序（为什么不是 kill）
 
 卸载/升级先通过 IPC `Shutdown` 请求服务退出，与托盘「退出应用」是同一条路径。硬杀会留下

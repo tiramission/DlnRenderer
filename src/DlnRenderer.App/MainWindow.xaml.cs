@@ -63,6 +63,22 @@ public sealed partial class MainWindow : Window
 
     public bool IsFullScreen => _fullScreen;
 
+    /// <summary>
+    /// Navigates to the settings page. Used by the player page's firewall warning: selecting the
+    /// item goes through the same navigation handler as a click in the pane.
+    /// </summary>
+    public void ShowSettings()
+    {
+        foreach (var entry in Navigation.MenuItems)
+        {
+            if (entry is NavigationViewItem { Tag: "settings" } item)
+            {
+                Navigation.SelectedItem = item;
+                return;
+            }
+        }
+    }
+
     /// <summary>Enters or leaves the borderless fullscreen presenter.</summary>
     public void SetFullScreen(bool fullScreen)
     {

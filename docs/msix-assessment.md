@@ -29,7 +29,7 @@ manifest 相关结论来自本机 Windows SDK 的 schema（`Windows Kits\10\Incl
 | 1 | UI 退出后服务继续运行 | 实现选择 | 服务是 UI 拉起的独立进程，关窗不影响它；这与绿色包完全相同。**但"复用已有管道"只在同一版本下成立**：旧服务不认识新的 IPC 字段，线协议版本不匹配时会直接拒绝请求，管道虽通而命令无效 | `ServiceClient` 在用户会话里 `Process.Start` 服务；UI 重开时复用已有管道；版本不一致时提示在设置页重启服务，而不是重连 | **已验证**（用户级包，服务 session 1） |
 | 2 | 服务开机自启 | 实现选择 | 用户级包没有 `windows.service`，开机自启的对象是 **UI**（UI 再拉起服务） | 清单 `windows.startupTask`（默认关闭），设置页通过 `StartupTask` API 开关 | API 路径已编译；**未做重启实测** |
 | 3 | 卸载清理 | 平台特性 | 系统卸载移除包；用户数据在 `%LOCALAPPDATA%\DlnRenderer`，不在包内 | 卸载后的用户数据保留策略待定 | 未验证卸载后的残留 |
-| 4 | 入站防火墙规则（UDP 1900 / TCP 18090） | 平台限制 | **manifest 能力不创建防火墙规则**；用户级安装也没有提权钩子 | 用户手动运行 `firewall-rules.ps1`，或首次运行由 UI 引导 | **未实现** |
+| 4 | 入站防火墙规则（UDP 1900 / TCP 18090） | 平台限制 | manifest 能力不**保证**生成入站规则；用户级安装也没有安装期提权钩子 | 设置页「网络与发现」检测并一键添加（一次 UAC；与 `firewall-rules.ps1` 同名规则，MSIX 下按包族名限定） | **已实现**；真实 UAC 添加未验证（见 `docs/testing.md` §13） |
 | 5 | SSDP 多播 | 未验证假设 | 服务是用户会话里的普通进程，多播行为与绿色包一致 | — | **已验证**：真实控制端 192.168.1.72 发现并订阅成功 |
 | 6 | libmpv 随包分发（GPL） | 实现选择 | 与 MSIX 完整性校验冲突 | `uap10:PackageIntegrity Content Enforcement="off"` 让包内文件可被替换；GPL 义务走阶段 F | manifest 已声明；替换本身未实测 |
 | 7 | 服务写状态文件 | 实现选择 | 用户会话下 `%LOCALAPPDATA%` 可用且**未被虚拟化** | 日志在 `C:\Users\<用户>\AppData\Local\DlnRenderer\logs\` | **已验证** |
@@ -63,7 +63,8 @@ manifest 相关结论来自本机 Windows SDK 的 schema（`Windows Kits\10\Incl
 - 没有 SCM 的崩溃自动重启：服务崩溃后由 UI 的重连/重启逻辑处理（UI 已有"重启服务"）。
   **版本不一致走的是同一条出路**：它不是崩溃，但同样只能靠用户手动重启——旧服务会静默忽略新
   字段，拒绝新版本号，重试多少次都没用。
-- MSIX 渠道没有提权钩子：防火墙入站规则要用户手动加或由 UI 引导（未实现）。
+- MSIX 渠道没有安装期提权钩子：防火墙入站规则由用户在设置页「网络与发现」里一次 UAC 授权后
+  由应用创建（见 `docs/packaging.md` §5），而不是安装时自动完成。
 - **跨 IPC 协议版本升级后旧服务进程会残留**：没有停服钩子，而升级要停的恰恰是旧服务。绿色包靠
   `stop-service.ps1`（按版本列表依次尝试）兜住，MSIX 做不到——见 [`ipc-protocol.md`](ipc-protocol.md) §6。
 
@@ -78,7 +79,8 @@ manifest 相关结论来自本机 Windows SDK 的 schema（`Windows Kits\10\Incl
 
 ## 7. 仍然未解决
 
-- **MSIX 渠道的防火墙入站规则**：没有自动方案。
+- **MSIX 渠道的防火墙入站规则**：已有检测与一键添加路径，但没有安装期自动方案，
+  且真实 UAC 添加未在本机跑过（见 `docs/testing.md` §13）。
 - **开机启动的重启实测**：`StartupTask` 路径只验证了编译，没有真正注销/重启。
 - **干净机器上的安装**：依赖的 Windows App Runtime 缺失时的体验未验证。
 - **卸载后的数据目录保留策略**：尚未决定，也未验证。

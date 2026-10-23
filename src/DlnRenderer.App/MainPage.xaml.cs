@@ -289,6 +289,12 @@ public sealed partial class MainPage : Page
         };
     }
 
+    /// <summary>
+    /// The firewall warning cannot be fixed from here, and the fix needs a UAC prompt that belongs on
+    /// the settings page next to its explanation.
+    /// </summary>
+    private void OnOpenSettingsClick(object sender, RoutedEventArgs e) => App.MainWindow?.ShowSettings();
+
     private async void OnPlayClick(object sender, RoutedEventArgs e) => await ViewModel.PlayAsync();
 
     private async void OnPauseClick(object sender, RoutedEventArgs e) => await ViewModel.PauseAsync();

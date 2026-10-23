@@ -851,3 +851,54 @@ CI 上有时候能过，只是因为状态偶尔先走到 `Stopped`。修法是�
 `VolumeStateConsistencyTests` 自己的 `SessionContext` 把会话日志丢给了 `_ => { }`，所以它在 CI 上
 失败时**没有任何内部记录**可看。现在两个测试的日志都落盘，并在超时时把最后 40 行附进异常消息——
 上面那段 Seek 的日志就是这么来的。没有它，这次的失败仍然只能报"它没发生"。
+
+## 13. 防火墙发现能力：检测与一键放行（2026-10-23）
+
+**问题**：入站规则缺失时，服务本地一切正常（IPC 通、状态正确、播放无错），只是控制端永远发现不了
+这台电脑。清单能力不保证生成规则，用户级 MSIX 也没有安装期提权钩子，所以"装完就坏了"最容易发生在
+只装了 MSIX 的机器上，而且没有任何日志指向它。
+
+**改动**：`Core/Network/FirewallCoverage`（判定）+ `App/Services/FirewallPolicyReader`（读策略）+
+`App/Services/FirewallRuleInstaller`（一次 UAC 添加）+ 设置页「网络与发现」卡片 + 主页警告条。
+
+### 13.1 自动化
+
+| 检查 | 结果 |
+| --- | --- |
+| `dotnet build DlnRenderer.sln -c Debug -p:Platform=x64` | 成功，0 警告 0 错误 |
+| `dotnet test … --no-build` | **442 通过 / 0 失败 / 0 跳过**（Core 61、Player 25、Dlna 230、Service 126） |
+| 新增 `FirewallCoverageTests` | 16 个：端口/协议/范围/列表匹配、程序限定（按文件名，覆盖 MSIX 版本化路径）、profile 阻断与覆盖、防火墙关闭、无网络、不可读策略、端口号透传、大小写与 `DomainAuthenticated` 映射 |
+
+### 13.2 真实策略读取（本机，Windows 11 26300）
+
+用一个临时控制台宿主编译 `FirewallPolicyReader`（与 App 同一份源码）读取真实防火墙：
+
+```text
+read: 24–44 ms, 553 inbound allow rules
+active=Private+Public firewallOn=Private+Public
+exposure: ssdp=Covered http=Covered open=True attention=False
+```
+
+- 与 `Get-NetFirewallRule` 的对照：`-DisplayName 'DlnRenderer*'` 加逐条端口过滤耗时 **4.7 s**，
+  所以没有采用 cmdlets；COM 自动化对象（IDispatch 按名取成员）是几十毫秒。
+- 结论与机器实际状态一致（本机确实能被发现）。顺带修正一个先前假设：这台机器上 MSIX 安装**确实**
+  产生了 `DlnRenderer_<pfn>…AllCapabilities` / `…ServerCapability` 形态的入站规则，所以
+  "MSIX 渠道永远不可发现"不成立；文档里已改成"不保证"，检测逻辑也不依赖哪一种来源。
+
+### 13.3 规则脚本（`-WhatIf` 实际执行，未提权、未改系统）
+
+两个分支各跑一次生成的脚本，把 `New-/Remove-NetFirewallRule` 换成 `-WhatIf`：
+
+| 分支 | 结果 |
+| --- | --- |
+| 绿色包：`-Program <安装目录>\DlnRenderer.Service.exe` | exit 0，两条规则通过参数校验 |
+| MSIX：`-PackageFamilyName <包族名>`（`-Program` 作回退） | exit 0，两条规则通过参数校验 |
+| 删除已有规则（管道 + `-WhatIf`） | 对同名的两条 MSIX 规则实际命中，输出 `WhatIf: Remove-NetFirewallRule …` |
+
+**未验证**：
+
+- **真实 UAC 添加**：会修改本机防火墙策略，未在本次执行。设置页的按钮路径（`Verb=runas` →
+  读回写日志 → 重新探测）只验证到脚本生成与参数校验。
+- **界面运行时**：本机直接运行 `bin` 里的未打包 exe 在 Windows App SDK 自动初始化处即以
+  `REGDB_E_CLASSNOTREG` 退出（与本次改动无关，MSIX 渠道靠清单的运行时依赖规避），因此
+  设置页/主页的**视觉效果未经目视确认**；`x:Bind` 由编译期检查覆盖。

@@ -31,6 +31,12 @@ public partial class App : Application
     /// <summary>One pipe connection shared by the window, the tray icon and the settings page.</summary>
     public static ServiceClient Client { get; private set; } = null!;
 
+    /// <summary>
+    /// Whether the firewall lets control points reach us. Discovery needs inbound rules that no
+    /// manifest capability can create, so both pages read this one probe.
+    /// </summary>
+    public static FirewallMonitor Firewall { get; private set; } = null!;
+
     internal static TrayIcon? Tray { get; private set; }
 
     /// <summary>True once the user asked to exit; the window must then really close.</summary>
@@ -49,6 +55,7 @@ public partial class App : Application
         DispatcherQueue = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread();
         Settings = SettingsStore.Load();
 
+        Firewall = new FirewallMonitor(DispatcherQueue);
         Client = new ServiceClient();
         Client.SnapshotChanged += OnSnapshotChanged;
 
@@ -71,6 +78,11 @@ public partial class App : Application
         }
 
         Window.Activate();
+
+        // Discovery is the whole product, so ask about it before the first cast rather than when the
+        // settings page happens to be opened. The port is corrected once the service reports its
+        // control URL.
+        _ = Firewall.RefreshAsync();
     }
 
     /// <summary>Brings the window back from the tray.</summary>

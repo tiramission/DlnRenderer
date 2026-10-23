@@ -15,13 +15,30 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!--  Service status: playback and discovery live in the background process.  -->
-        <InfoBar
-            Grid.Row="0"
-            IsClosable="False"
-            IsOpen="True"
-            Message="{x:Bind ViewModel.ServiceText, Mode=OneWay}"
-            Severity="{x:Bind ViewModel.ServiceSeverity, Mode=OneWay}" />
+        <!--
+            Service status: playback and discovery live in the background process. The second bar is
+            the one thing that makes discovery fail while everything else looks healthy - a firewall
+            with no inbound rule still answers on the local pipe.
+        -->
+        <StackPanel Grid.Row="0" Spacing="8">
+            <InfoBar
+                IsClosable="False"
+                IsOpen="True"
+                Message="{x:Bind ViewModel.ServiceText, Mode=OneWay}"
+                Severity="{x:Bind ViewModel.ServiceSeverity, Mode=OneWay}" />
+            <InfoBar
+                IsClosable="False"
+                IsOpen="{x:Bind ViewModel.ShowsFirewallWarning, Mode=OneWay}"
+                Message="{x:Bind ViewModel.FirewallWarningText, Mode=OneWay}"
+                Severity="Warning">
+                <InfoBar.ActionButton>
+                    <Button
+                        AutomationProperties.Name="打开设置放行防火墙"
+                        Click="OnOpenSettingsClick"
+                        Content="去设置" />
+                </InfoBar.ActionButton>
+            </InfoBar>
+        </StackPanel>
 
         <!--
             In "UI window" mode the service draws the picture over this whole window, below the

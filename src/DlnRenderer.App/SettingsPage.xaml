@@ -72,6 +72,49 @@
                     Message="{x:Bind ViewModel.StatusText, Mode=OneWay}"
                     Severity="{x:Bind ViewModel.Severity, Mode=OneWay}" />
 
+                <!--
+                    Discovery depends on inbound firewall rules, and no manifest capability creates
+                    them: a packaged install that never ran the portable installer is discoverable by
+                    nobody. This card is where that shows up and where it is repaired.
+                -->
+                <Border Style="{StaticResource SettingsCardStyle}">
+                    <StackPanel>
+                        <StackPanel Padding="20,16,20,12" Spacing="2">
+                            <TextBlock Style="{StaticResource CardTitleStyle}" Text="网络与发现" />
+                            <TextBlock Style="{StaticResource SecondaryTextStyle}" Text="控制端要发现这台电脑，Windows 防火墙必须允许入站的 SSDP 与投屏端口。" />
+                        </StackPanel>
+                        <Border Style="{StaticResource DividerStyle}" />
+
+                        <Grid Padding="20,14" ColumnSpacing="20">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Style="{StaticResource RowTitleStyle}" Text="{x:Bind ViewModel.FirewallStatusText, Mode=OneWay}" />
+                                <TextBlock Style="{StaticResource RowDescriptionStyle}" Text="{x:Bind ViewModel.FirewallDetailText, Mode=OneWay}" />
+                            </StackPanel>
+                            <StackPanel
+                                Grid.Column="1"
+                                VerticalAlignment="Center"
+                                Orientation="Horizontal"
+                                Spacing="8">
+                                <Button
+                                    AutomationProperties.Name="重新检查防火墙"
+                                    Click="OnRefreshFirewallClick"
+                                    Content="重新检查"
+                                    IsEnabled="{x:Bind ViewModel.CanRefreshFirewall, Mode=OneWay}" />
+                                <Button
+                                    AutomationProperties.Name="允许局域网发现"
+                                    Click="OnAllowDiscoveryClick"
+                                    Content="允许发现"
+                                    IsEnabled="{x:Bind ViewModel.CanAllowDiscovery, Mode=OneWay}"
+                                    Style="{StaticResource AccentButtonStyle}" />
+                            </StackPanel>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
                 <!--  Device  -->
                 <Border Style="{StaticResource SettingsCardStyle}">
                     <StackPanel>

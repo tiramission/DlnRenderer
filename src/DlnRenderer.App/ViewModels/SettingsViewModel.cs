@@ -2,6 +2,7 @@ using System.Reflection;
 using CommunityToolkit.Mvvm.ComponentModel;
 using DlnRenderer.Core.Ipc;
 using DlnRenderer.Core.Models;
+using DlnRenderer.Core.Network;
 using DlnRenderer.Core.Settings;
 using DlnRenderer.Services;
 using Microsoft.UI.Xaml.Controls;
@@ -27,9 +28,12 @@ public sealed class SettingsViewModel : ObservableObject
     private bool _hasStatus;
     private bool _isError;
     private bool _busy;
+    private bool _firewallBusy;
 
     public SettingsViewModel()
     {
+        App.Firewall.Changed += OnFirewallChanged;
+
         var settings = App.Settings;
         _deviceName = settings.DeviceName;
         _startWithWindows = settings.StartWithWindows;
@@ -170,6 +174,81 @@ public sealed class SettingsViewModel : ObservableObject
     /// <summary>Folder holding settings.json, the device UUID and the service logs.</summary>
     public string DataFolder { get; } = Path.GetDirectoryName(SettingsStore.DefaultPath) ?? string.Empty;
 
+    /// <summary>One line naming what the firewall does or does not let through right now.</summary>
+    public string FirewallStatusText
+    {
+        get
+        {
+            var exposure = App.Firewall.Exposure;
+            if (_firewallBusy || App.Firewall.IsProbing)
+            {
+                return "正在检查防火墙…";
+            }
+
+            if (!exposure.IsKnown)
+            {
+                return "无法读取防火墙状态";
+            }
+
+            if (!exposure.HasActiveNetwork)
+            {
+                return "未连接到网络";
+            }
+
+            var missing = new List<string>(2);
+            if (exposure.Ssdp != FirewallPortState.Covered)
+            {
+                missing.Add($"UDP {FirewallCoverage.SsdpPort}");
+            }
+
+            if (exposure.Http != FirewallPortState.Covered)
+            {
+                missing.Add($"TCP {exposure.HttpPort}");
+            }
+
+            return missing.Count == 0
+                ? $"已放行 UDP {FirewallCoverage.SsdpPort} 与 TCP {exposure.HttpPort}"
+                : $"未放行 {string.Join(" / ", missing)}";
+        }
+    }
+
+    /// <summary>Why the status is what it is, and what the fix costs. Silence is not an option here.</summary>
+    public string FirewallDetailText
+    {
+        get
+        {
+            var exposure = App.Firewall.Exposure;
+            if (!exposure.IsKnown)
+            {
+                return "防火墙策略读不出来。如果控制端发现不了本设备，请用管理员 PowerShell 运行 tools/package/firewall-rules.ps1。";
+            }
+
+            if (!exposure.HasActiveNetwork)
+            {
+                return "连上局域网后才会检查；发现与投送都需要网络。";
+            }
+
+            if (exposure.IsOpen)
+            {
+                return "控制端可以正常发现并投送媒体。规则只对“专用/域”网络开放，公用网络下不暴露。";
+            }
+
+            return exposure.IsProfileRestricted
+                ? "规则已存在，但当前网络被 Windows 标记为“公用”，规则不会生效。在“设置 > 网络和 Internet”里把该网络改为专用，或改用“允许发现”重新添加。"
+                : "添加规则需要一次管理员授权（UAC）。规则只对“专用/域”网络开放，不会在公用网络上暴露本机。";
+        }
+    }
+
+    public bool CanRefreshFirewall => !_firewallBusy && !App.Firewall.IsProbing;
+
+    /// <summary>
+    /// Also offered when the policy could not be read: the rules are idempotent and named, so adding
+    /// them is a safe escape hatch for someone whose device is simply not showing up.
+    /// </summary>
+    public bool CanAllowDiscovery => !_firewallBusy
+        && !App.Firewall.IsProbing
+        && (App.Firewall.Exposure.NeedsAttention || !App.Firewall.Exposure.IsKnown);
+
     /// <summary>Which deployment shape is running; the settings that apply differ between them.</summary>
     public string DeploymentText => StartupRegistration.IsPackaged ? "MSIX 用户级包" : "绿色包 / 开发运行";
 
@@ -275,6 +354,49 @@ public sealed class SettingsViewModel : ObservableObject
         {
             Busy = false;
         }
+    }
+
+    /// <summary>Re-probes the firewall; the result arrives through <see cref="App.Firewall"/>.</summary>
+    public Task RefreshFirewallAsync() => App.Firewall.RefreshAsync();
+
+    /// <summary>
+    /// Adds the inbound rules through one UAC prompt. A refused prompt, a refused policy or a probe
+    /// that still says "blocked" afterwards is reported verbatim, never as success.
+    /// </summary>
+    public async Task AllowDiscoveryAsync()
+    {
+        if (!CanAllowDiscovery)
+        {
+            return;
+        }
+
+        _firewallBusy = true;
+        NotifyFirewallChanged();
+        Show("正在请求管理员授权…", isError: false);
+
+        try
+        {
+            var (succeeded, message) = await App.Firewall.AllowDiscoveryAsync();
+            Show(message, isError: !succeeded);
+        }
+        finally
+        {
+            _firewallBusy = false;
+            NotifyFirewallChanged();
+        }
+    }
+
+    /// <summary>Detaches from the shared monitor; the page is recreated on every navigation.</summary>
+    public void Dispose() => App.Firewall.Changed -= OnFirewallChanged;
+
+    private void OnFirewallChanged(object? sender, EventArgs e) => NotifyFirewallChanged();
+
+    private void NotifyFirewallChanged()
+    {
+        OnPropertyChanged(nameof(FirewallStatusText));
+        OnPropertyChanged(nameof(FirewallDetailText));
+        OnPropertyChanged(nameof(CanRefreshFirewall));
+        OnPropertyChanged(nameof(CanAllowDiscovery));
     }
 
     /// <summary>Stops and starts the service so the saved settings take effect.</summary>
