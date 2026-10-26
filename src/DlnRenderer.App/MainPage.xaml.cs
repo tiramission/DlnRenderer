@@ -131,25 +131,33 @@ public sealed partial class MainPage : Page
         ViewModel.Dispose();
     }
 
-    private void OnPageSizeChanged(object sender, SizeChangedEventArgs e) => ReportVideoTarget();
+    private void OnPageSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        // Entering or leaving fullscreen resizes the window: the dock's fullscreen glyph and the
+        // floating-bar decision both follow the real presenter, not the last click.
+        SyncFullScreenGlyph();
+        UpdateTransportOverlay();
+        ReportVideoTarget();
+    }
 
     private void OnXamlRootChanged(XamlRoot sender, XamlRootChangedEventArgs args) => ReportVideoTarget(force: true);
 
     /// <summary>
-    /// Shows the floating transport bar while an embedded cast has a picture on screen, and gives up
-    /// both the bar and fullscreen once the cast is really over.
+    /// Shows the floating transport bar only in fullscreen, where the picture covers the dock; a
+    /// windowed cast keeps the dock below the stage as its control area.
     /// </summary>
     /// <remarks>
-    /// Both are debounced by the same grace period: switching items in a cast goes
+    /// Hiding the overlay is debounced by the same grace period: switching items in a cast goes
     /// Stopped -> Transitioning -> Playing within a second, and reacting to the first Stopped would
     /// flash the controls away and drop the user out of fullscreen every time the next item started.
     /// </remarks>
     private void UpdateTransportOverlay()
     {
-        var embedded = App.Settings.DisplayMode == DisplayMode.Embedded;
-        var showsVideo = embedded && ViewModel.ShowsVideo;
+        var showsOverlay = App.Settings.DisplayMode == DisplayMode.Embedded
+            && App.MainWindow?.IsFullScreen == true
+            && ViewModel.ShowsVideo;
 
-        if (showsVideo)
+        if (showsOverlay)
         {
             _endOfCastTimer?.Stop();
             App.MainWindow?.SetTransportOverlayVisible(true);
@@ -158,7 +166,7 @@ public sealed partial class MainPage : Page
 
         if (App.MainWindow?.IsFullScreen != true)
         {
-            // Nothing to wait for: without fullscreen the bar can go at once.
+            // Windowed: the dock is the control area, the floating bar has nothing to add.
             App.MainWindow?.SetTransportOverlayVisible(false);
             return;
         }
@@ -203,6 +211,10 @@ public sealed partial class MainPage : Page
         }
 
         _reportedTarget = target;
+
+        // The floating bar is placed from the stage's screen rectangle, which the window can derive
+        // from this target; keeping it in step here means one geometry, one source.
+        App.MainWindow?.UpdateStageRect(target);
         _ = SendVideoTargetAsync(target);
     }
 
@@ -220,13 +232,18 @@ public sealed partial class MainPage : Page
     }
 
     /// <summary>
-    /// The rectangle an embedded cast may cover.
+    /// The rectangle an embedded cast may cover: the stage border inside the page.
     /// </summary>
     /// <remarks>
-    /// In a window the picture takes over the page's own area - the content region inside the
-    /// navigation view - so the title bar and the navigation pane stay usable and the user can still
-    /// reach settings mid-film. In fullscreen the whole client area is used, because there is nothing
-    /// left worth keeping.
+    /// The stage is what the video is allowed to fill - the area between the service status bars and
+    /// the dock, inside the navigation view - so the title bar, the navigation pane and the dock stay
+    /// usable while a cast is on screen. In fullscreen the whole client area is used, because there
+    /// is nothing left worth keeping.
+    /// <para>
+    /// The page cannot draw controls over that picture - a Win32 child window is always painted above
+    /// its parent's XAML - so the transport bar lives in <see cref="TransportOverlayWindow"/>, which
+    /// is placed over the stage's bottom edge from <see cref="MainWindow.StageScreenRect"/>.
+    /// </para>
     /// </remarks>
     private VideoTarget BuildVideoTarget()
     {
@@ -258,9 +275,11 @@ public sealed partial class MainPage : Page
         }
         else
         {
-            // The page's own bounds already exclude the title bar and the navigation pane, and they
-            // follow any layout change without the page having to know the window's structure.
-            var bounds = TransformToVisual(null).TransformBounds(new Rect(0, 0, ActualWidth, ActualHeight));
+            // The stage's bounds already exclude the title bar, the navigation pane, the status bars
+            // and the dock, and they follow any layout change without the page having to know the
+            // window's structure.
+            var bounds = StageHost.TransformToVisual(null).TransformBounds(
+                new Rect(0, 0, StageHost.ActualWidth, StageHost.ActualHeight));
             left = bounds.X;
             top = bounds.Y;
             width = bounds.Width;
@@ -295,13 +314,33 @@ public sealed partial class MainPage : Page
     /// </summary>
     private void OnOpenSettingsClick(object sender, RoutedEventArgs e) => App.MainWindow?.ShowSettings();
 
-    private async void OnPlayClick(object sender, RoutedEventArgs e) => await ViewModel.PlayAsync();
-
-    private async void OnPauseClick(object sender, RoutedEventArgs e) => await ViewModel.PauseAsync();
+    private async void OnPlayPauseClick(object sender, RoutedEventArgs e)
+    {
+        if (ViewModel.IsPlaying)
+        {
+            await ViewModel.PauseAsync();
+        }
+        else
+        {
+            await ViewModel.PlayAsync();
+        }
+    }
 
     private async void OnStopClick(object sender, RoutedEventArgs e) => await ViewModel.StopAsync();
 
     private async void OnMuteClick(object sender, RoutedEventArgs e) => await ViewModel.ToggleMuteAsync();
+
+    private void OnMuteToggleChanged(object sender, RoutedEventArgs e)
+        => MuteIcon.Glyph = MuteButton.IsChecked == true ? "\uE74F" : "\uE767";
+
+    private void OnFullScreenClick(object sender, RoutedEventArgs e)
+    {
+        App.MainWindow?.SetFullScreen(App.MainWindow?.IsFullScreen != true);
+        SyncFullScreenGlyph();
+    }
+
+    private void SyncFullScreenGlyph()
+        => FullScreenIcon.Glyph = App.MainWindow?.IsFullScreen == true ? "\uE73F" : "\uE740";
 
     private async void OnPositionSliderChanged(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
     {
@@ -341,6 +380,9 @@ public sealed partial class MainPage : Page
                 _suppressVolumeSync = true;
                 VolumeSlider.Value = ViewModel.Volume;
                 _suppressVolumeSync = false;
+                break;
+            case nameof(MainPageViewModel.IsPlaying):
+                PlayPauseIcon.Glyph = ViewModel.IsPlaying ? "\uE769" : "\uE768";
                 break;
             case nameof(MainPageViewModel.ShowsVideo):
                 UpdateTransportOverlay();

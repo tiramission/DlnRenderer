@@ -992,3 +992,105 @@ DLL 哈希），`choco install ffmpeg` 供应窗口测试生成素材所需的�
 2. 正式代码签名证书未获取（F5 签名部分）。
 
 **不在此做法律结论**，必要时咨询专业意见。
+
+## 18. 阶段 G：双播放内核与播放界面重构
+
+### 18.1 G1 决策：引入 LibVLCSharp 作为第二播放内核
+
+**结论**：`DlnRenderer.Player` 新增 `Vlc/VlcPlayer`（libVLC 适配器），与 `MpvPlayer` 并列实现
+`Core.Interfaces.IMediaPlayer`；用户在设置页选择内核，服务启动时实例化其一，切换需重启服务。
+
+**包选型核实（2026-10-27，nuget.org 包页 + 包内 nuspec 实测）**：
+
+| 候选 | 核实结果 | 结论 |
+| --- | --- | --- |
+| **LibVLCSharp 3.10.2**（选中） | VideoLAN 官方项目（code.videolan.org/videolan/libvlcsharp）；LGPL-2.1-or-later；原生支持 net10.0，无托管依赖 | 采用；原生二进制来自官方 `VideoLAN.LibVLC.Windows 3.0.24`（同 LGPL，见 §18.4） |
+| 手写 P/Invoke 绑定（沿用 mpv 的做法） | libvlc 表面约 60+ 函数 + 回调生命周期管理，成本远高于 mpv 的 ~10 函数 | 不采用：LibVLCSharp 是官方绑定且许可证无冲突，自写只增加风险 |
+| Vlc.DotNet 等社区封装 | 维护停滞（官方迁移文档即为其停止维护的说明） | 不采用 |
+
+**架构要点**：
+
+- `IMediaPlayer` 本就是为引擎可替换设计的，本次未改接口。会话层（`RendererSession`）从
+  `MpvPlayer` 改为依赖 `IMediaPlayer`，新增的引擎参数只用于快照展示（`PlaybackEngineInfo.Id`）。
+- 两个引擎画进**同一个** `VideoPresenter` 子 HWND：mpv 用 `wid`，libvlc 用
+  `libvlc_media_player_set_hwnd`。窗口所有权、跨进程嵌入、全屏/置顶逻辑（§13）完全复用。
+- `MpvCommandException` 的基类改为 `Core.Models.PlayerCommandException`；会话层的"seek 被拒→
+  延迟到重载后"逻辑改抓基类，对两个引擎一视同仁。`VlcCommandException` 同样继承它。
+- libvlc 没有"加载即暂停"模式：`VlcPlayer.LoadAsync` 以 `Play()+Pause()` 模拟（输入以暂停态
+  创建），`Playing` 事件回调里再按 `_desiredPause` 补一次暂停，复刻 mpv 适配器的意图记忆。
+  这与 `SetAVTransportURI 不自动播放` 的协议要求一致。
+- libvlc 事件不携带媒体标识：以 `_loadPending` 标志吞掉加载期间的旧状态事件（对应 mpv 的
+  playlist-entry-id 过滤），会话层仍有按 `MediaInfo` 比对的第二道滤网。
+- 引擎初始化失败**让启动失败**，不静默回退 mpv：用户选了 VLC 而服务悄悄跑 mpv，所有症状
+  都会指向错误的方向。失败信息在服务日志与 UI 上可见，设置页可切回。
+
+**已知取舍**：`Play()+Pause()` 在极少数慢打开的流上可能出现一声极短的音频泄漏（mpv 因原生
+支持 open-paused 无此问题）；libvlc 3 的 `Stop()`/`EndReached` 后复用行为由适配器显式重新
+`LoadAsync` 保证，不依赖未定义行为。
+
+**端到端修复记录（`tools/control-point/renderer-check.ps1` + HTTP 媒体源实测）**：首个实现的
+真机投屏全部卡死在 TRANSITIONING，本地文件冒烟却全绿——三个叠加缺陷，恰好都被"本地路径"
+掩盖：
+
+1. `Media(LibVLC, string)` 构造函数默认 **path 语义**（`FromType.Path`），http URL 被当成本地
+   文件打开（`filesystem: cannot open file ...http:\...`）。改用 `Media(LibVLC, Uri)` 重载：
+   file 走 `new_path`、远程走 `new_location`。
+2. 打开失败的 `EncounteredError`/`EndReached` 被 `_loadPending` 当作旧媒体事件吞掉，会话永远
+   等不到状态收敛。修正：`Stop()` 在替换媒体前同步执行，加载期间的失败事件必属新媒体——
+   `EncounteredError` 一律上报；`EndReached` 清除 `_loadPending` 并发布，让重载等待能够收敛。
+3. 媒体已 `Ended` 时 `StopAsync` 不再调用 `Stop()`，也没有任何事件可把状态机带回 Stopped。
+   修正：Stop 成功后显式复位位置/轨道并强制发布（与 mpv 适配器的 Stop 语义一致）。
+
+另修一个暂停态问题：libvlc 暂停时应用 `Time` 不发 `TimeChanged`，Seek 后进度会读到旧值，
+`SeekAsync` 现在在成功后直接更新缓存并发布（与 `SetVolumeAsync` 同一"调用后即可见"契约）。
+
+服务新增 `--engine mpv|vlc` 启动参数：显式参数优先于设置文件，让内核选择可以脱离设置被
+诊断脚本与 CI 复现。
+
+### 18.2 G2 播放界面重构（舞台式布局）
+
+原布局里嵌入画面覆盖整个页面区域，待机元数据与画面争同一块地方，控制条浮在窗口底边。
+重构后：
+
+- **舞台（stage）**：主页新增 `StageHost` 圆角容器（服务状态栏与控制坞之间）。`BuildVideoTarget`
+  上报的矩形从"整页"改为舞台边界的物理像素——标题栏、导航栏、状态栏、控制坞在投屏时全部
+  保持可用。全屏模式仍用整个客户区。
+- **控制坞（dock）**：舞台下方常驻一行典型播放控件（播放/暂停合并按钮、停止、静音、音量、
+  进度、全屏切换），是**窗口播放的控制区**——画面嵌在舞台里、控制坞始终可见可点，窗口播放
+  不再弹出任何悬浮控件；待机时它同样是唯一的控制面。
+- **悬浮控制条**：**仅全屏时出现**。全屏后视频覆盖整个客户区、控制坞随之被盖住，鼠标移动时
+  浮出的控制条接管传输控制（锚定舞台底边，约 2.5 秒无鼠标自动隐藏，Esc 退出全屏）。
+  MainWindow 保存舞台的屏幕矩形（`StageScreenRect`，随窗口移动重算），条宽在舞台内收边，
+  并带音量滑杆与内核徽标。窗口播放与全屏的控制面不叠加：同一套命令，前者在控制坞、后者在
+  浮出条上。
+- **待机页**：舞台内居中展示封面/状态/标题/提示；投屏开始后原生视频窗口覆盖整个舞台，
+  XAML 待机内容自然被盖住，无需显式切换。
+- **内核徽标**：快照 `Engine` 字段 → 主页控制坞与悬浮条的 "播放内核 mpv（libmpv）/ VLC（libvlc）"
+  文案；旧服务无字段时徽标隐藏。
+
+### 18.3 设置与 IPC 演进
+
+- `RendererSettings.PlaybackEngine`（枚举，默认 Mpv），`TryValidate` 拒绝越界值；设置页
+  "播放"卡片新增单选组，保存后提示需重启服务（与设备名同策略），复用现有"重启后台服务"按钮。
+- `RendererSnapshot.Engine`（`"mpv"`/`"vlc"`）为加法字段，协议版本保持 1.1：旧服务缺字段时
+  UI 隐藏徽标而非假设 mpv（见 `docs/ipc-protocol.md` §4）。
+- 服务启动参数同步增加 engine 读取（`ServiceStartupOptions.ApplySettings`）。
+
+### 18.4 许可证与分发的增补
+
+- LibVLCSharp 3.10.2（LGPL-2.1-or-later）与 VideoLAN.LibVLC.Windows 3.0.24（LGPL-2.1-or-later）
+  均为 VideoLAN 官方构建；`THIRD-PARTY-NOTICES.md` §3/§4 记录版本、哈希与源码地址。
+- `VideoLAN.LibVLC.Windows` 在 AnyCPU 下默认复制 x86/x64/arm64 三套（约 450 MB）；项目只发
+  x64，已在 `DlnRenderer.Player.csproj` 用 `VlcWindowsX64Enabled` 等属性裁剪到 108 MB。
+- `build-dist.ps1` / `build-msix.ps1` 的必需文件清单增加 `libvlc\win-x64\libvlc.dll`、
+  `libvlccore.dll` 与 `plugins\`，防止打包回归悄悄丢掉第二内核。
+- 许可证义务对比 libmpv 更轻（LGPL：提供全文 + 源码地址 + 可替换的库目录即可），`docs/licenses.md`
+  §2.1 记录判定依据。
+
+### 18.5 测试
+
+- `VlcStateMapperTests`（9 例）：libvlc 信号 → 域状态映射全组合，含 Error 优先级与 End>Pause。
+- `PlaybackEngineTests`（6 例）：默认引擎、枚举校验、设置文件往返、引擎 id 往返、快照字段
+  对旧服务的兼容解析。
+- 播放器真机集成测试仍以 mpv 为准（CI 有 libmpv 供应）；libvlc 侧的真机投屏验收属
+  `docs/testing.md` 的手工清单（需真实控制端）。

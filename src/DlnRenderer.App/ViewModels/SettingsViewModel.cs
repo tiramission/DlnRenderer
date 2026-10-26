@@ -24,6 +24,7 @@ public sealed class SettingsViewModel : ObservableObject
     private bool _closeToTray;
     private bool _hardwareDecoding;
     private DisplayMode _displayMode;
+    private PlaybackEngine _playbackEngine;
     private string _statusText = string.Empty;
     private bool _hasStatus;
     private bool _isError;
@@ -40,6 +41,7 @@ public sealed class SettingsViewModel : ObservableObject
         _closeToTray = settings.CloseToTray;
         _hardwareDecoding = settings.HardwareDecoding;
         _displayMode = settings.DisplayMode;
+        _playbackEngine = settings.PlaybackEngine;
     }
 
     public string DeviceName
@@ -139,6 +141,55 @@ public sealed class SettingsViewModel : ObservableObject
     }
 
     /// <summary>
+    /// Which playback engine the service creates on its next start. Both engines feed the same video
+    /// surface and accept the same transport commands, so the choice is about decode quality and
+    /// stream compatibility, not about a different interface.
+    /// </summary>
+    public PlaybackEngine PlaybackEngine
+    {
+        get => _playbackEngine;
+        set
+        {
+            if (_playbackEngine == value)
+            {
+                return;
+            }
+
+            _playbackEngine = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(IsMpvEngine));
+            OnPropertyChanged(nameof(IsVlcEngine));
+            NotifyDirty();
+        }
+    }
+
+    /// <summary>Radio button view: setting false is ignored, the group already unchecked it.</summary>
+    public bool IsMpvEngine
+    {
+        get => _playbackEngine == PlaybackEngine.Mpv;
+        set
+        {
+            if (value)
+            {
+                PlaybackEngine = PlaybackEngine.Mpv;
+            }
+        }
+    }
+
+    /// <summary>Radio button view: setting false is ignored, the group already unchecked it.</summary>
+    public bool IsVlcEngine
+    {
+        get => _playbackEngine == PlaybackEngine.Vlc;
+        set
+        {
+            if (value)
+            {
+                PlaybackEngine = PlaybackEngine.Vlc;
+            }
+        }
+    }
+
+    /// <summary>
     /// True when the page differs from what is on disk. The save button and the footer hint both
     /// read this, so an edit that cannot be saved (validation) never looks applied.
     /// </summary>
@@ -151,7 +202,8 @@ public sealed class SettingsViewModel : ObservableObject
                 || StartWithWindows != saved.StartWithWindows
                 || CloseToTray != saved.CloseToTray
                 || HardwareDecoding != saved.HardwareDecoding
-                || DisplayMode != saved.DisplayMode;
+                || DisplayMode != saved.DisplayMode
+                || PlaybackEngine != saved.PlaybackEngine;
         }
     }
 
@@ -316,6 +368,7 @@ public sealed class SettingsViewModel : ObservableObject
                 CloseToTray = CloseToTray,
                 HardwareDecoding = HardwareDecoding,
                 DisplayMode = DisplayMode,
+                PlaybackEngine = PlaybackEngine,
             }.Normalize();
 
             if (!RendererSettings.TryValidate(settings, out var validationError))
@@ -348,7 +401,7 @@ public sealed class SettingsViewModel : ObservableObject
             await ApplyDisplayModeAsync(settings.DisplayMode);
 
             NotifyDirty();
-            Show("已保存。设备名称与硬件解码在重启服务后生效，显示方式已立即生效。", isError: false);
+            Show("已保存。设备名称、播放内核与硬件解码在重启服务后生效，显示方式已立即生效。", isError: false);
         }
         finally
         {

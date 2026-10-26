@@ -8,10 +8,10 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="d">
 
-    <Grid Padding="24" RowSpacing="16">
+    <Grid Padding="24,16,24,24" RowSpacing="12">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
+            <RowDefinition Height="*" MinHeight="220" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
@@ -41,69 +41,81 @@
         </StackPanel>
 
         <!--
-            In "UI window" mode the service draws the picture over this whole window, below the
-            title bar, and a floating transport bar (its own window) sits on top. This page is what
-            the user sees before the first cast and after the last one, so it keeps its normal
-            layout; nothing here is a video placeholder.
+            The stage: the service embeds the picture into exactly this border (the page reports its
+            rectangle in physical pixels over IPC). While a video cast is on screen the native video
+            window sits above everything in here, so the standby panel below is only ever seen
+            before the first frame, after a stop, and while audio plays.
         -->
-        <Grid Grid.Row="1" ColumnSpacing="24">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="*" />
-            </Grid.ColumnDefinitions>
+        <Border
+            x:Name="StageHost"
+            Grid.Row="1"
+            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+            BorderThickness="1"
+            CornerRadius="8">
+            <Grid>
+                <!--
+                    Standby: what a control point will find. The cover keeps its place in the
+                    hierarchy even when the control point sent none - the glyph fills in.
+                -->
+                <StackPanel
+                    MaxWidth="640"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Spacing="10">
+                    <Border
+                        Width="136"
+                        Height="136"
+                        HorizontalAlignment="Center"
+                        Background="{ThemeResource LayerFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1"
+                        CornerRadius="8">
+                        <Grid>
+                            <FontIcon
+                                FontSize="40"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                Glyph="&#xE8B8;" />
+                            <Image
+                                Source="{x:Bind ViewModel.CoverImage, Mode=OneWay}"
+                                Stretch="UniformToFill" />
+                        </Grid>
+                    </Border>
 
-            <!--  Cover art from DIDL-Lite; the glyph stays visible when the control point sent none.  -->
-            <Border
-                Width="180"
-                Height="180"
-                VerticalAlignment="Center"
-                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                BorderThickness="1"
-                CornerRadius="8">
-                <Grid>
-                    <FontIcon
-                        FontSize="44"
-                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                        Glyph="&#xE8B8;" />
-                    <Image
-                        Source="{x:Bind ViewModel.CoverImage, Mode=OneWay}"
-                        Stretch="UniformToFill" />
-                </Grid>
-            </Border>
+                    <StackPanel HorizontalAlignment="Center" Orientation="Horizontal" Spacing="8">
+                        <FontIcon
+                            FontSize="14"
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            Glyph="{x:Bind ViewModel.StatusGlyph, Mode=OneWay}" />
+                        <TextBlock
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            Text="{x:Bind ViewModel.StatusText, Mode=OneWay}" />
+                    </StackPanel>
 
-            <StackPanel
-                Grid.Column="1"
-                VerticalAlignment="Center"
-                Spacing="6">
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                    <FontIcon
-                        FontSize="14"
-                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                        Glyph="{x:Bind ViewModel.StatusGlyph, Mode=OneWay}" />
                     <TextBlock
+                        HorizontalAlignment="Center"
+                        MaxLines="3"
+                        Style="{StaticResource SubtitleTextBlockStyle}"
+                        Text="{x:Bind ViewModel.TitleText, Mode=OneWay}"
+                        TextAlignment="Center"
+                        TextTrimming="CharacterEllipsis"
+                        TextWrapping="Wrap" />
+
+                    <TextBlock
+                        HorizontalAlignment="Center"
                         Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                        Text="{x:Bind ViewModel.StatusText, Mode=OneWay}" />
+                        Text="{x:Bind ViewModel.DetailText, Mode=OneWay}"
+                        TextAlignment="Center"
+                        TextWrapping="Wrap" />
                 </StackPanel>
+            </Grid>
+        </Border>
 
-                <TextBlock
-                    MaxLines="2"
-                    Style="{StaticResource TitleTextBlockStyle}"
-                    Text="{x:Bind ViewModel.TitleText, Mode=OneWay}"
-                    TextTrimming="CharacterEllipsis" />
-
-                <TextBlock
-                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                    Text="{x:Bind ViewModel.ArtistText, Mode=OneWay}"
-                    TextTrimming="CharacterEllipsis" />
-
-                <TextBlock
-                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                    Text="{x:Bind ViewModel.DetailText, Mode=OneWay}"
-                    TextWrapping="Wrap" />
-            </StackPanel>
-        </Grid>
-
+        <!--
+            Dock: transport controls that are always on screen, whether or not the stage is showing
+            the picture. During a video cast the floating bar over the picture offers the same
+            commands; this row is the keyboard-accessible, always-visible counterpart.
+        -->
         <StackPanel Grid.Row="2" Spacing="12">
             <Grid ColumnSpacing="12">
                 <Grid.ColumnDefinitions>
@@ -128,47 +140,73 @@
                     Text="{x:Bind ViewModel.DurationText, Mode=OneWay}" />
             </Grid>
 
-            <StackPanel Orientation="Horizontal" Spacing="8">
-                <Button
-                    AutomationProperties.Name="播放"
-                    Click="OnPlayClick"
-                    ToolTipService.ToolTip="播放">
-                    <FontIcon FontSize="14" Glyph="&#xE768;" />
-                </Button>
-                <Button
-                    AutomationProperties.Name="暂停"
-                    Click="OnPauseClick"
-                    ToolTipService.ToolTip="暂停">
-                    <FontIcon FontSize="14" Glyph="&#xE769;" />
-                </Button>
-                <Button
-                    AutomationProperties.Name="停止"
-                    Click="OnStopClick"
-                    ToolTipService.ToolTip="停止">
-                    <FontIcon FontSize="14" Glyph="&#xE71A;" />
-                </Button>
+            <Grid ColumnSpacing="12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
 
-                <ToggleButton
-                    x:Name="MuteButton"
-                    AutomationProperties.Name="静音"
-                    Click="OnMuteClick"
-                    IsChecked="{x:Bind ViewModel.IsMuted, Mode=OneWay}"
-                    ToolTipService.ToolTip="静音 / 取消静音">
-                    <FontIcon FontSize="14" Glyph="&#xE767;" />
-                </ToggleButton>
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Button
+                        x:Name="PlayPauseButton"
+                        AutomationProperties.Name="播放 / 暂停"
+                        Click="OnPlayPauseClick"
+                        ToolTipService.ToolTip="播放 / 暂停">
+                        <FontIcon x:Name="PlayPauseIcon" FontSize="14" Glyph="&#xE768;" />
+                    </Button>
+                    <Button
+                        AutomationProperties.Name="停止"
+                        Click="OnStopClick"
+                        ToolTipService.ToolTip="停止">
+                        <FontIcon FontSize="14" Glyph="&#xE71A;" />
+                    </Button>
 
-                <TextBlock
-                    Margin="16,0,0,0"
-                    VerticalAlignment="Center"
-                    Text="音量" />
-                <Slider
-                    x:Name="VolumeSlider"
-                    Width="140"
-                    AutomationProperties.Name="音量"
-                    Maximum="100"
-                    Minimum="0"
-                    ValueChanged="OnVolumeSliderChanged" />
-            </StackPanel>
+                    <ToggleButton
+                        x:Name="MuteButton"
+                        AutomationProperties.Name="静音"
+                        Checked="OnMuteToggleChanged"
+                        Click="OnMuteClick"
+                        IsChecked="{x:Bind ViewModel.IsMuted, Mode=OneWay}"
+                        ToolTipService.ToolTip="静音 / 取消静音"
+                        Unchecked="OnMuteToggleChanged">
+                        <FontIcon x:Name="MuteIcon" FontSize="14" Glyph="&#xE767;" />
+                    </ToggleButton>
+
+                    <TextBlock
+                        Margin="16,0,0,0"
+                        VerticalAlignment="Center"
+                        Text="音量" />
+                    <Slider
+                        x:Name="VolumeSlider"
+                        Width="140"
+                        AutomationProperties.Name="音量"
+                        Maximum="100"
+                        Minimum="0"
+                        ValueChanged="OnVolumeSliderChanged" />
+                </StackPanel>
+
+                <StackPanel
+                    Grid.Column="1"
+                    HorizontalAlignment="Right"
+                    Orientation="Horizontal"
+                    Spacing="8">
+                    <Button
+                        x:Name="FullScreenButton"
+                        AutomationProperties.Name="全屏"
+                        Click="OnFullScreenClick"
+                        ToolTipService.ToolTip="全屏 / 退出全屏">
+                        <FontIcon x:Name="FullScreenIcon" FontSize="14" Glyph="&#xE740;" />
+                    </Button>
+
+                    <!--  Which kernel the service actually started with; hidden when it predates the field.  -->
+                    <TextBlock
+                        VerticalAlignment="Center"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        Text="{x:Bind ViewModel.EngineText, Mode=OneWay}"
+                        Visibility="{x:Bind ViewModel.EngineVisibility, Mode=OneWay}" />
+                </StackPanel>
+            </Grid>
 
             <InfoBar
                 IsOpen="{x:Bind ViewModel.HasError, Mode=OneWay}"

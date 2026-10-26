@@ -150,6 +150,28 @@ public sealed class MainPageViewModel : ObservableObject, IDisposable
     /// <summary>Cover art from the control point's DIDL metadata, null when it supplied none.</summary>
     public ImageSource? CoverImage { get => _coverImage; private set => SetProperty(ref _coverImage, value); }
 
+    /// <summary>
+    /// Names the playback kernel the service is running, e.g. "播放内核 mpv（libmpv）". Empty while the
+    /// service predates the field, which the dock hides rather than guessing a kernel.
+    /// </summary>
+    public string EngineText
+    {
+        get => _engineText;
+        private set
+        {
+            if (SetProperty(ref _engineText, value))
+            {
+                OnPropertyChanged(nameof(EngineVisibility));
+            }
+        }
+    }
+
+    public Microsoft.UI.Xaml.Visibility EngineVisibility => string.IsNullOrEmpty(EngineText)
+        ? Microsoft.UI.Xaml.Visibility.Collapsed
+        : Microsoft.UI.Xaml.Visibility.Visible;
+
+    private string _engineText = string.Empty;
+
     /// <summary>Connects to the service, starting it when it is not already running.</summary>
     public async Task InitializeAsync()
     {
@@ -334,6 +356,10 @@ public sealed class MainPageViewModel : ObservableObject, IDisposable
 
         var status = snapshot.Playback;
         var media = status.Media;
+
+        EngineText = snapshot.Engine is { } engineId
+            ? $"播放内核 {PlaybackEngineInfo.DisplayName(PlaybackEngineInfo.FromId(engineId))}"
+            : string.Empty;
 
         HasMedia = media is not null;
         IsPlaying = status.State == PlaybackState.Playing;

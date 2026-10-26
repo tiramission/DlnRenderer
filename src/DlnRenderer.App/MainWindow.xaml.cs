@@ -1,9 +1,11 @@
+using System.Runtime.InteropServices;
 using DlnRenderer.Core.Ipc;
 using DlnRenderer.Core.Models;
 using DlnRenderer.Services;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Windows.Graphics;
 
 namespace DlnRenderer;
 
@@ -26,6 +28,15 @@ public sealed partial class MainWindow : Window
     private TransportOverlayWindow? _overlay;
     private bool _overlayWanted;
     private bool _fullScreen;
+
+    /// <summary>The embedded video area in client coordinates, as last reported by the player page.</summary>
+    private VideoTarget? _stageTarget;
+
+    /// <summary>
+    /// The video area translated to screen coordinates, recomputed on every window move. Zero size
+    /// means "unknown": fullscreen casts or a page that has not reported yet.
+    /// </summary>
+    private RectInt32 _stageScreenRect;
 
     public MainWindow()
     {
@@ -62,6 +73,48 @@ public sealed partial class MainWindow : Window
     }
 
     public bool IsFullScreen => _fullScreen;
+
+    /// <summary>Screen rectangle of the embedded video area, or a zero rect when there is none.</summary>
+    public RectInt32 StageScreenRect => _stageScreenRect;
+
+    /// <summary>
+    /// Records where the embedded picture lives, so the floating transport bar can hug the stage
+    /// instead of the window's bottom edge. The player page calls this every time it re-reports
+    /// its geometry.
+    /// </summary>
+    /// <remarks>
+    /// The rectangle is kept client-relative and translated to screen coordinates on demand: a
+    /// window drag changes the screen position but not the client rectangle, and the window thread
+    /// knows each move before the page could re-report it.
+    /// </remarks>
+    public void UpdateStageRect(VideoTarget target)
+    {
+        _stageTarget = target.CanEmbed ? target : null;
+        ApplyStageRect();
+    }
+
+    private void ApplyStageRect()
+    {
+        var target = _stageTarget;
+        if (target is null)
+        {
+            _stageScreenRect = default;
+            return;
+        }
+
+        var origin = new NativePoint { X = 0, Y = 0 };
+        if (!ClientToScreen(App.WindowHandle, ref origin))
+        {
+            _stageScreenRect = default;
+            return;
+        }
+
+        _stageScreenRect = new RectInt32(
+            origin.X + target.X,
+            origin.Y + target.Y,
+            target.Width,
+            target.Height);
+    }
 
     /// <summary>
     /// Navigates to the settings page. Used by the player page's firewall warning: selecting the
@@ -132,6 +185,9 @@ public sealed partial class MainWindow : Window
 
         if (args.DidPositionChange || args.DidSizeChange)
         {
+            // The stage's screen position moves with the window even though the client rectangle
+            // does not; the bar is placed from the stage, so both need a fresh look.
+            ApplyStageRect();
             _overlay?.FollowOwner(this);
         }
 
@@ -220,4 +276,15 @@ public sealed partial class MainWindow : Window
             DiagnosticsLog.Write($"suspend video target failed: {ex.Message}");
         }
     }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint
+    {
+        public int X;
+        public int Y;
+    }
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ClientToScreen(nint window, ref NativePoint point);
 }

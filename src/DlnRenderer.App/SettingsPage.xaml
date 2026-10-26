@@ -238,8 +238,38 @@
                     <StackPanel>
                         <StackPanel Padding="20,16,20,12" Spacing="2">
                             <TextBlock Style="{StaticResource CardTitleStyle}" Text="播放" />
-                            <TextBlock Style="{StaticResource SecondaryTextStyle}" Text="作用于后台服务的 libmpv 实例，保存后需重启服务。" />
+                            <TextBlock Style="{StaticResource SecondaryTextStyle}" Text="作用于后台服务的播放实例，保存后需重启服务。" />
                         </StackPanel>
+                        <Border Style="{StaticResource DividerStyle}" />
+
+                        <Grid Padding="20,14" ColumnSpacing="20">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Style="{StaticResource RowTitleStyle}" Text="播放内核" />
+                                <TextBlock Style="{StaticResource RowDescriptionStyle}" Text="mpv 与 VLC 共用同一套投屏界面与控制方式。某个片源在其中一个内核上解码异常时，切换到另一个重试。" />
+                            </StackPanel>
+                            <StackPanel
+                                Grid.Column="1"
+                                VerticalAlignment="Center"
+                                Orientation="Horizontal"
+                                Spacing="12">
+                                <RadioButton
+                                    AutomationProperties.Name="mpv 内核"
+                                    Content="mpv"
+                                    GroupName="PlaybackEngine"
+                                    IsChecked="{x:Bind ViewModel.IsMpvEngine, Mode=TwoWay}"
+                                    ToolTipService.ToolTip="libmpv：解码兼容性广，默认内核" />
+                                <RadioButton
+                                    AutomationProperties.Name="VLC 内核"
+                                    Content="VLC"
+                                    GroupName="PlaybackEngine"
+                                    IsChecked="{x:Bind ViewModel.IsVlcEngine, Mode=TwoWay}"
+                                    ToolTipService.ToolTip="libvlc：第二内核，个别流媒体表现更好" />
+                            </StackPanel>
+                        </Grid>
                         <Border Style="{StaticResource DividerStyle}" />
 
                         <Grid Padding="20,14" ColumnSpacing="20">
@@ -257,7 +287,7 @@
                                 AutomationProperties.Name="硬件解码"
                                 IsOn="{x:Bind ViewModel.HardwareDecoding, Mode=TwoWay}"
                                 OffContent="软件解码"
-                                OnContent="自动（hwdec=auto-safe）" />
+                                OnContent="自动" />
                         </Grid>
                     </StackPanel>
                 </Border>

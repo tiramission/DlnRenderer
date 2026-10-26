@@ -12,28 +12,31 @@ using WinRT.Interop;
 namespace DlnRenderer;
 
 /// <summary>
-/// The transport bar that floats over an embedded cast.
+/// The transport bar that floats over a fullscreen cast.
 /// </summary>
 /// <remarks>
-/// Why this is a window and not part of the page: in "UI window" mode the picture is a native child
-/// window of the main window, and Windows paints child windows <em>above</em> their parent's XAML
-/// content. XAML can therefore never be drawn over the video - but a top-level window owned by the
-/// main window can, because an owned window is always above its owner.
+/// Why this is a window and not part of the page: the picture is a native child window of the main
+/// window, and Windows paints child windows <em>above</em> their parent's XAML content. XAML can
+/// therefore never be drawn over the video - but a top-level window owned by the main window can,
+/// because an owned window is always above its owner.
 /// <para>
-/// It hides itself after a couple of seconds without mouse movement and comes back on the next
-/// move, like any video player, so it does not sit on top of a film. The pointer is sampled with
-/// <c>GetCursorPos</c> rather than XAML pointer events: most of the window is the video, which
-/// belongs to the service process and reports nothing to the UI.
+/// It is only shown in fullscreen, where the video covers the page's dock: there it appears on any
+/// mouse movement and hides itself after a couple of seconds without one, like any video player. A
+/// windowed cast uses the dock below the stage instead, so the bar does not sit over a film that
+/// still has its own controls visible. The pointer is sampled with <c>GetCursorPos</c> rather than
+/// XAML pointer events: most of the window is the video, which belongs to the service process and
+/// reports nothing to the UI.
 /// </para>
 /// </remarks>
 public sealed partial class TransportOverlayWindow : Window
 {
-    /// <summary>Bar size in DIPs; small enough to sit over a film without hiding much.</summary>
-    private const int BarWidthDip = 640;
+    /// <summary>Bar size in DIPs; widened for the volume slider, and clamped to the stage by layout.</summary>
+    private const int BarWidthDip = 720;
 
     private const int BarHeightDip = 72;
 
-    private const int BottomMarginDip = 28;
+    /// <summary>Gap between the bar and the bottom edge of the video it rides over, in DIPs.</summary>
+    private const int BottomMarginDip = 20;
 
     /// <summary>Corner radius of the card, in DIPs; the window region is cut to match.</summary>
     private const int CornerRadiusDip = 16;
@@ -58,6 +61,7 @@ public sealed partial class TransportOverlayWindow : Window
     private readonly nint _handle;
     private readonly DispatcherTimer _idleTimer = new() { Interval = TimeSpan.FromMilliseconds(150) };
     private bool _suppressSlider;
+    private bool _suppressVolume;
     private nint _owner;
     private PointInt32 _lastCursor;
     private DateTime _lastActivity = DateTime.UtcNow;
@@ -174,17 +178,44 @@ public sealed partial class TransportOverlayWindow : Window
         }
     }
 
+    /// <summary>
+    /// Places the bar at the bottom edge of the video area when one is known, else at the window's
+    /// bottom edge, and keeps it in front.
+    /// </summary>
+    /// <remarks>
+    /// The stage rectangle is what the page reserved for the picture; anchoring the bar to it keeps
+    /// the controls over the film instead of over the page's own dock, which shows the same commands.
+    /// </remarks>
     private void ApplyLayout(MainWindow owner)
     {
-        var bounds = owner.AppWindow.Position;
-        var size = owner.AppWindow.Size;
         var scale = owner.Content?.XamlRoot?.RasterizationScale ?? 1.0;
-
-        var width = Math.Min((int)Math.Round(BarWidthDip * scale), Math.Max(200, size.Width - 80));
         var height = (int)Math.Round(BarHeightDip * scale);
 
-        var x = bounds.X + ((size.Width - width) / 2);
-        var y = bounds.Y + size.Height - height - (int)Math.Round(BottomMarginDip * scale);
+        var stage = owner.StageScreenRect;
+        var windowBounds = owner.AppWindow.Position;
+        var windowSize = owner.AppWindow.Size;
+
+        int width;
+        int x;
+        int y;
+
+        if (stage.Width > 1 && stage.Height > 1)
+        {
+            width = Math.Min((int)Math.Round(BarWidthDip * scale), Math.Max(200, stage.Width - (int)Math.Round(32 * scale)));
+            x = stage.X + ((stage.Width - width) / 2);
+            y = stage.Y + stage.Height - height - (int)Math.Round(BottomMarginDip * scale);
+
+            // Defensive: a stale stage rectangle from before a window move could sit off-window for
+            // one frame until the page re-reports. Clamping keeps the bar reachable.
+            x = Math.Clamp(x, windowBounds.X, windowBounds.X + Math.Max(0, windowSize.Width - width));
+            y = Math.Clamp(y, windowBounds.Y, windowBounds.Y + Math.Max(0, windowSize.Height - height));
+        }
+        else
+        {
+            width = Math.Min((int)Math.Round(BarWidthDip * scale), Math.Max(200, windowSize.Width - 80));
+            x = windowBounds.X + ((windowSize.Width - width) / 2);
+            y = windowBounds.Y + windowSize.Height - height - (int)Math.Round(BottomMarginDip * scale);
+        }
 
         AppWindow.MoveAndResize(new RectInt32(x, y, width, height));
 
@@ -298,6 +329,25 @@ public sealed partial class TransportOverlayWindow : Window
         }
     }
 
+    private async void OnVolumeChanged(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
+    {
+        Touch();
+
+        if (_suppressVolume)
+        {
+            return;
+        }
+
+        try
+        {
+            await App.Client.SendAsync(IpcCommands.SetVolume, volume: (int)Math.Round(e.NewValue));
+        }
+        catch (Exception ex)
+        {
+            DiagnosticsLog.Write($"overlay volume failed: {ex.Message}");
+        }
+    }
+
     private async void OnPositionChanged(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
     {
         Touch();
@@ -392,6 +442,22 @@ public sealed partial class TransportOverlayWindow : Window
         PositionSlider.Maximum = Math.Max(1, (status.Duration ?? TimeSpan.Zero).TotalSeconds);
         PositionSlider.Value = status.Position.TotalSeconds;
         _suppressSlider = false;
+
+        _suppressVolume = true;
+        VolumeSlider.Value = status.Volume;
+        _suppressVolume = false;
+
+        // The service names its kernel; an old service sends nothing and the badge stays hidden
+        // rather than pretending to know.
+        if (snapshot.Engine is { } engineId)
+        {
+            EngineBadge.Text = PlaybackEngineInfo.DisplayName(PlaybackEngineInfo.FromId(engineId));
+            EngineBadge.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            EngineBadge.Visibility = Visibility.Collapsed;
+        }
     }
 
     private static string Format(TimeSpan value)

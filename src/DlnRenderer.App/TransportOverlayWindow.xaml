@@ -8,23 +8,34 @@
     mc:Ignorable="d">
 
     <!--
-        A borderless bar that floats over the video. It is a separate top-level window on purpose:
+        The transport bar that floats over the video. It is a separate top-level window on purpose:
         the video is a native child window of the main window, and Windows always paints child
         windows above the XAML content of their parent - so XAML controls can never be drawn on top
         of the picture. An owned window is the only way to put our own controls there.
 
-        Colours come from the theme, like every other card in the app: a hard-coded dark panel looked
-        out of place next to the rest of the interface. The background fills the window edge to edge
-        because the window itself is cut to a rounded shape with SetWindowRgn - any inset would show
-        as a rectangle of window background.
+        Layout mirrors a desktop video player's bottom bar: transport, a slider that takes the
+        remaining width, then volume and fullscreen. Colours come from the theme like every other
+        card in the app; the background fills the window edge to edge because the window itself is
+        cut to a rounded shape with SetWindowRgn - any inset would show as a rectangle of window
+        background.
     -->
     <Grid Padding="16,0" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
-        <StackPanel
-            VerticalAlignment="Center"
-            Orientation="Horizontal"
-            Spacing="8">
+        <Grid VerticalAlignment="Center" ColumnSpacing="8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
             <Button
                 x:Name="PlayPauseButton"
+                Grid.Column="0"
                 Width="40"
                 Height="40"
                 AutomationProperties.Name="播放 / 暂停"
@@ -38,6 +49,7 @@
 
             <Button
                 x:Name="StopButton"
+                Grid.Column="1"
                 Width="40"
                 Height="40"
                 AutomationProperties.Name="停止"
@@ -51,8 +63,9 @@
 
             <TextBlock
                 x:Name="ElapsedText"
+                Grid.Column="2"
                 Width="54"
-                Margin="8,0,0,0"
+                Margin="4,0,0,0"
                 VerticalAlignment="Center"
                 Foreground="{ThemeResource TextFillColorPrimaryBrush}"
                 Text="00:00"
@@ -60,7 +73,8 @@
 
             <Slider
                 x:Name="PositionSlider"
-                Width="232"
+                Grid.Column="3"
+                MinWidth="120"
                 VerticalAlignment="Center"
                 AutomationProperties.Name="播放进度"
                 Maximum="1"
@@ -70,6 +84,7 @@
 
             <TextBlock
                 x:Name="TotalText"
+                Grid.Column="4"
                 Width="54"
                 VerticalAlignment="Center"
                 Foreground="{ThemeResource TextFillColorPrimaryBrush}"
@@ -77,6 +92,7 @@
 
             <Button
                 x:Name="MuteButton"
+                Grid.Column="5"
                 Width="40"
                 Height="40"
                 AutomationProperties.Name="静音"
@@ -88,8 +104,29 @@
                 <FontIcon FontSize="15" Glyph="&#xE767;" />
             </Button>
 
+            <Slider
+                x:Name="VolumeSlider"
+                Grid.Column="6"
+                Width="88"
+                VerticalAlignment="Center"
+                AutomationProperties.Name="音量"
+                Maximum="100"
+                Minimum="0"
+                ValueChanged="OnVolumeChanged" />
+
+            <TextBlock
+                x:Name="EngineBadge"
+                Grid.Column="7"
+                Margin="8,0"
+                VerticalAlignment="Center"
+                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                Style="{StaticResource CaptionTextBlockStyle}"
+                Text=""
+                Visibility="Collapsed" />
+
             <Button
                 x:Name="FullScreenButton"
+                Grid.Column="8"
                 Width="40"
                 Height="40"
                 AutomationProperties.Name="全屏"
@@ -101,6 +138,6 @@
                 ToolTipService.ToolTip="全屏 / 退出全屏">
                 <FontIcon FontSize="15" Glyph="&#xE740;" />
             </Button>
-        </StackPanel>
+        </Grid>
     </Grid>
 </Window>
