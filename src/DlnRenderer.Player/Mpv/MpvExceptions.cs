@@ -1,3 +1,5 @@
+using DlnRenderer.Core.Models;
+
 namespace DlnRenderer.Player.Mpv;
 
 /// <summary>libmpv could not be loaded or initialised.</summary>
@@ -11,7 +13,7 @@ public sealed class MpvInitializationException : Exception
 
 /// <summary>An mpv command or property write failed.</summary>
 public sealed class MpvCommandException(string command, int errorCode, string errorText)
-    : InvalidOperationException($"mpv command '{command}' failed ({errorCode}): {errorText}")
+    : PlayerCommandException($"mpv command '{command}' failed ({errorCode}): {errorText}")
 {
     public string Command { get; } = command;
 

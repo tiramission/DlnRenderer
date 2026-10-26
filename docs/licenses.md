@@ -16,14 +16,16 @@
 | Microsoft.Windows.SDK.BuildTools | 10.0.28000.2705 | Microsoft Windows SDK 许可条款 | 构建工具 | **非** OSI 开源；仅构建期使用，不随包分发 |
 | Microsoft.Windows.SDK.BuildTools.WinApp | 0.7.1 | Microsoft 许可条款 | `dotnet run` 包身份支持 | 仅开发期 |
 | CommunityToolkit.Mvvm | 8.4.2 | MIT | MVVM（`ObservableObject`） | App |
+| LibVLCSharp | 3.10.2 | **LGPL-2.1-or-later** | 第二播放内核（libvlc）的 .NET 绑定 | Player；官方 VideoLAN 项目维护，net10.0 原生支持，2026-10-27 核对 |
 | Microsoft.NET.Test.Sdk | 17.14.1 | MIT | 测试宿主 | 测试项目 |
 | xunit | 2.9.3 | Apache-2.0 | 单元/集成测试 | 测试项目 |
 | xunit.runner.visualstudio | 3.1.4 | Apache-2.0 | 测试适配器 | 测试项目 |
 | coverlet.collector | 6.0.4 | MIT | 覆盖率收集 | 测试项目 |
 
-`DlnRenderer.Dlna` 与 `DlnRenderer.Service` **没有引入任何第三方 NuGet 依赖**：
+`DlnRenderer.Dlna` 与 `DlnRenderer.Service` **没有直接引入任何第三方 NuGet 依赖**：
 SSDP 用 `System.Net.Sockets`，HTTP 用 `TcpListener`，SOAP/DIDL 用 `System.Xml.Linq`，
-IPC 用 `System.IO.Pipes`。
+IPC 用 `System.IO.Pipes`（`LibVLCSharp` 经由 `DlnRenderer.Player` 传递引用到服务，记录在
+`THIRD-PARTY-NOTICES.md` §4）。
 
 开发用工具（**不随产品分发**，因此不产生分发义务）：
 
@@ -53,6 +55,29 @@ mpv-configuration 不含 -Dgpl=false  ->  GPL build
 注意：Scoop `mpv-dev` 包内**不含任何 LICENSE/COPYING/NOTICE 文件**（目录仅有 `include/`、
 `libmpv-2.dll`、`libmpv.dll.a`），许可证信息只能从上游仓库获取——这正是仓库内自带
 `THIRD-PARTY-NOTICES.md` 与 `LICENSES/` 的原因。
+
+### 2.1 libVLC（第二播放内核）
+
+随包分发的第二组原生二进制，来自 VideoLAN 官方 NuGet 包（与 libmpv 不同：有官方包、
+nuspec 明示许可证、来源可追溯到 VideoLAN 自己的构建流水线）。
+
+| 组件 | 版本 / 标识 | 许可证 | 分发状态 |
+| --- | --- | --- | --- |
+| VideoLAN.LibVLC.Windows | 3.0.24（libvlc `3.0.24`） | **LGPL-2.1-or-later**（nuspec `license` 字段） | **随包分发**（`libvlc\win-x64\`，约 108 MiB；x86/arm64 在 `DlnRenderer.Player.csproj` 内裁剪），声明见 `THIRD-PARTY-NOTICES.md` §3 |
+
+已核实的二进制指纹：
+
+```text
+libvlc\win-x64\libvlc.dll      sha256 c0b1bedbc8e11267b39111733920a6af73d08791e333e4f8902eaffe4daf6db9
+libvlc\win-x64\libvlccore.dll  sha256 c089f281affe1e85c61edd5996c2b496191f82fa5cdc7ef709b0c09bf754cdbe
+source https://www.nuget.org/packages/VideoLAN.LibVLC.Windows/3.0.24 (code.videolan.org/videolan/libvlc-nuget)
+nuspec license = LGPL-2.1-or-later
+```
+
+LGPL 义务（对比 libmpv 的 GPL）：动态加载使用方需提供 LGPL 全文与对应源码获取方式、
+并允许用户替换库文件——分发包同时携带 `LICENSES\LGPL-2.1-or-later.txt`、`THIRD-PARTY-NOTICES.md`
+§3 的源码地址，且库以独立 `libvlc\win-x64\` 目录存在、可整目录替换，均满足。包内插件树的
+个别模块可能适用 GPL；本项目自身为 GPL-2.0-or-later，因此不构成额外义务。
 
 ## 3. 已评估但未采用
 

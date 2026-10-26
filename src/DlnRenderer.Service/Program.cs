@@ -1,9 +1,11 @@
 using System.Net;
+using DlnRenderer.Core.Interfaces;
 using DlnRenderer.Core.Ipc;
 using DlnRenderer.Core.Models;
 using DlnRenderer.Core.Settings;
 using DlnRenderer.Dlna;
 using DlnRenderer.Player.Mpv;
+using DlnRenderer.Player.Vlc;
 using DlnRenderer.Service.Hosting;
 using DlnRenderer.Service.Ipc;
 
@@ -171,7 +173,7 @@ internal static class Program
             $"launch: {(options.LaunchedByServiceControlManager ? "service control manager" : "interactive/ui")}, " +
             $"state directory {ServicePaths.DataDirectory}");
         log.Write($"settings: device name '{options.FriendlyName}', hwdec={options.HardwareDecoding}, " +
-                  $"display={options.DisplayMode}");
+                  $"display={options.DisplayMode}, engine={PlaybackEngineInfo.Id(options.PlaybackEngine)}");
 
         var presenter = await VideoPresenter.StartAsync().ConfigureAwait(false);
         running.Presenter = presenter;
@@ -189,7 +191,8 @@ internal static class Program
             EnableSsdp = options.Ssdp,
         };
 
-        var session = new RendererSession(player, presenter, dlnaOptions, log.Write);
+        var session = new RendererSession(
+            player, PlaybackEngineInfo.Id(options.PlaybackEngine), presenter, dlnaOptions, log.Write);
         running.Session = session;
 
         // The mode is known before the UI connects, but the host window and the reserved rectangle
@@ -214,13 +217,35 @@ internal static class Program
         Console.WriteLine($"READY {host.DescriptionUrl}");
     }
 
-    /// <summary>Creates the libmpv player bound to the service's video surface.</summary>
+    /// <summary>
+    /// Creates the playback engine selected in the settings, bound to the service's video surface.
+    /// </summary>
     /// <remarks>
+    /// A failed engine initialisation fails the startup on purpose rather than falling back to the
+    /// other engine: a renderer that quietly runs a different kernel than the one the user chose
+    /// looks like the choice was honoured while every symptom points somewhere else. The settings
+    /// page can switch back, and the failure is in the service log and on the UI.
+    /// <para>
     /// <c>DLN_MPV_LOGLEVEL</c> exists so a developer can raise mpv's verbosity without rebuilding;
     /// a rejected file is otherwise only visible as "loading failed".
+    /// </para>
     /// </remarks>
-    private static MpvPlayer CreatePlayer(ServiceStartupOptions options, nint videoWindow, ServiceLog log)
+    private static IMediaPlayer CreatePlayer(ServiceStartupOptions options, nint videoWindow, ServiceLog log)
     {
+        if (options.PlaybackEngine == PlaybackEngine.Vlc)
+        {
+            var vlc = new VlcPlayer(new VlcPlayerOptions
+            {
+                VideoWindowHandle = videoWindow,
+                HardwareDecoding = options.HardwareDecoding,
+            });
+
+            vlc.LogMessage += (_, message) => log.Write($"libvlc {message.Level}: {message.Text}");
+            log.Write("libvlc initialised (engine: vlc)");
+
+            return vlc;
+        }
+
         var player = new MpvPlayer(new MpvPlayerOptions
         {
             VideoWindowHandle = videoWindow,
@@ -232,7 +257,7 @@ internal static class Program
         // failed" and Windows does not say why. Forwarding it costs nothing and turns a silent
         // black screen into a line the user can quote in a bug report.
         player.LogMessage += (_, message) => log.Write($"mpv {message.Level}: {message.Text}");
-        log.Write("libmpv initialised");
+        log.Write("libmpv initialised (engine: mpv)");
 
         return player;
     }
@@ -261,7 +286,7 @@ internal static class Program
     {
         public VideoPresenter? Presenter { get; set; }
 
-        public MpvPlayer? Player { get; set; }
+        public IMediaPlayer? Player { get; set; }
 
         public RendererSession? Session { get; set; }
 
@@ -306,7 +331,8 @@ internal sealed record ServiceStartupOptions
 {
     public const string Usage =
         "Usage: DlnRenderer.Service [--http-port N] [--no-ssdp] [--device-name NAME] " +
-        "[--listen-address IP] [--log PATH] [--exit-after SECONDS] [--no-hwdec] [--service]";
+        "[--listen-address IP] [--log PATH] [--exit-after SECONDS] [--no-hwdec] " +
+        "[--engine mpv|vlc] [--service]";
 
     public string FriendlyName { get; init; } = RendererSettings.DefaultDeviceName;
 
@@ -340,11 +366,17 @@ internal sealed record ServiceStartupOptions
     /// <summary>True when <c>--no-hwdec</c> was supplied, so settings must not override it.</summary>
     public bool HardwareDecodingSpecified { get; init; }
 
+    /// <summary>True when <c>--engine</c> was supplied, so settings must not override it.</summary>
+    public bool PlaybackEngineSpecified { get; init; }
+
     /// <summary>
     /// Where video is shown. Read at start so a service launched without a UI (or before the UI has
     /// laid out) already knows what the user asked for; the UI confirms it over IPC once connected.
     /// </summary>
     public DisplayMode DisplayMode { get; init; } = DisplayMode.Fullscreen;
+
+    /// <summary>Which playback engine the service runs. Read at start; switching needs a restart.</summary>
+    public PlaybackEngine PlaybackEngine { get; init; } = PlaybackEngine.Mpv;
 
     public IPAddress? ListenAddress { get; init; }
 
@@ -389,6 +421,7 @@ internal sealed record ServiceStartupOptions
             FriendlyName = DeviceNameSpecified ? FriendlyName : settings.DeviceName,
             HardwareDecoding = HardwareDecodingSpecified ? HardwareDecoding : settings.HardwareDecoding,
             DisplayMode = settings.DisplayMode,
+            PlaybackEngine = PlaybackEngineSpecified ? PlaybackEngine : settings.PlaybackEngine,
         };
 
     /// <summary>
@@ -429,6 +462,28 @@ internal sealed record ServiceStartupOptions
             case "--no-hwdec":
                 updated = current with { HardwareDecoding = false, HardwareDecodingSpecified = true };
                 return true;
+
+            case "--engine":
+                if (!TryRead(args, ref index, out var engineText))
+                {
+                    error = "--engine requires 'mpv' or 'vlc'";
+                    return false;
+                }
+
+                if (string.Equals(engineText, "vlc", StringComparison.OrdinalIgnoreCase))
+                {
+                    updated = current with { PlaybackEngine = PlaybackEngine.Vlc, PlaybackEngineSpecified = true };
+                    return true;
+                }
+
+                if (string.Equals(engineText, "mpv", StringComparison.OrdinalIgnoreCase))
+                {
+                    updated = current with { PlaybackEngine = PlaybackEngine.Mpv, PlaybackEngineSpecified = true };
+                    return true;
+                }
+
+                error = "--engine requires 'mpv' or 'vlc'";
+                return false;
 
             case "--no-log":
                 updated = current with { LogPath = null };

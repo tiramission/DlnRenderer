@@ -5,10 +5,10 @@
 
 - 仓库：[tiramission/DlnRenderer](https://github.com/tiramission/DlnRenderer)
 - 分发包内容：`DlnRenderer.exe`（UI）、`DlnRenderer.Service.exe`（后台服务）、
-  `libmpv-2.dll`（唯一随包的 native 二进制）、`Assets\`、`LICENSE`、`LICENSES\`、本文件。
+  `libmpv-2.dll` 与 `libvlc\win-x64\`（随包的 native 二进制）、`Assets\`、`LICENSE`、`LICENSES\`、本文件。
 - 本项目代码的许可证：**GPL-2.0-or-later**，全文见 `LICENSE`。
 - 本文档中的每一条结论都注明了核对依据（上游许可证文件 URL 或本地二进制实测方式），
-  不依赖记忆或第三方元数据。核对方法与日期见 §7。
+  不依赖记忆或第三方元数据。核对方法与日期见 §9。
 
 ## 1. 本项目
 
@@ -72,11 +72,46 @@ DlnRenderer 是自由软件：你可以依据自由软件基金会发布的 GNU 
 若无法通过上述地址获取对应源码，可在仓库 Issues 中提出，我们会提供一份与二进制版本一致的
 源码副本；该承诺自对应版本发布起 3 年内有效。
 
-## 3. 静态链接进 `libmpv-2.dll` 的组件
+## 3. libVLC（第二个播放内核，随包分发的 native 组件）
+
+播放内核二选一（设置页），默认 mpv；选择 VLC 内核时，服务加载 `libvlc\win-x64\` 下的
+官方构建。文件随 NuGet 包 `VideoLAN.LibVLC.Windows` 一起分发。
+
+| 项 | 值 |
+| --- | --- |
+| 文件 | `libvlc\win-x64\libvlc.dll`、`libvlccore.dll` 与 `plugins\`、`lua\`、`hrtfs\` 全树（仅保留 x64，x86/arm64 已在工程内裁剪） |
+| 载荷体积 | 约 108 MiB |
+| libvlc 版本 | 3.0.24（`VersionInfo.ProductVersion = 3.0.24`） |
+| libvlc.dll SHA-256 | `c0b1bedbc8e11267b39111733920a6af73d08791e333e4f8902eaffe4daf6db9` |
+| libvlccore.dll SHA-256 | `c089f281affe1e85c61edd5996c2b496191f82fa5cdc7ef709b0c09bf754cdbe` |
+| 来源 | [VideoLAN.LibVLC.Windows 3.0.24](https://www.nuget.org/packages/VideoLAN.LibVLC.Windows/3.0.24)（VideoLAN 官方构建，`code.videolan.org/videolan/libvlc-nuget`） |
+| 许可证 | **LGPL-2.1-or-later**（nuspec `license = LGPL-2.1-or-later`） |
+
+许可证判定依据与义务履行：
+
+1. 许可证取自包内 `videolan.libvlc.windows.3.0.24.nuspec` 的 `license` 字段（SPDX 表达式），
+   与 nuget.org 包页一致；LGPL-2.1-or-later 全文随包放在 `LICENSES\LGPL-2.1-or-later.txt`。
+2. 本项目以动态加载方式使用 libvlc，本项目自身为 GPL-2.0-or-later，与 LGPL 及包内个别
+   GPL 模块的义务兼容；逆向工程、反编译等 LGPL 对动态链接使用方的义务因此不构成本包的
+   限制条款。
+3. 对应源码：<https://code.videolan.org/videolan/vlc>（VLC 3.0.x，libvlc 源码同仓库）、
+   <https://code.videolan.org/videolan/libvlc-nuget>（打包配方）。用户替换
+   `libvlc\win-x64\` 下的文件即可完成 LGPL 意义上的重新链接。
+
+## 4. LibVLCSharp（播放内核的 .NET 绑定，随包分发的托管组件）
+
+| 项 | 值 |
+| --- | --- |
+| 程序集 | `LibVLCSharp.dll`（随服务分发） |
+| 版本 | 3.10.2 |
+| 来源 | [LibVLCSharp 3.10.2](https://www.nuget.org/packages/LibVLCSharp)（VideoLAN 官方 .NET 绑定） |
+| 许可证 | **LGPL-2.1-or-later** |
+
+## 5. 静态链接进 `libmpv-2.dll` 的组件
 
 以下组件由第三方构建静态编入 libmpv，**不是**独立 DLL，无法单独替换。
 "核对依据"列是许可证结论的来源；带 `*` 的条目未能取到上游 LICENSE 文件，按上游项目自身
-声明记录，需在对外发布前补一次文件级核对（见 §8）。
+声明记录，需在对外发布前补一次文件级核对（见 §10）。
 
 | 组件 | 在包内的作用 | 许可证 | 核对依据 |
 | --- | --- | --- | --- |
@@ -120,31 +155,33 @@ DlnRenderer 是自由软件：你可以依据自由软件基金会发布的 GNU 
 对应许可证全文放在 `LICENSES\` 目录（GPL-2.0、LGPL-2.1、LGPL-2.0、Apache-2.0、ISC、MIT、
 BSD-2-Clause、BSD-3-Clause、curl、FTL、Zlib、WTFPL 及 MPL-1.1 见上游仓库）。
 
-## 4. 托管依赖（NuGet）
+## 6. 托管依赖（NuGet）
 
-这些程序集随包分发，许可证均为宽松型，完整许可条款在各自的包内 `LICENSE`/`license.txt`。
+这些程序集随包分发。宽松型组件的完整许可条款在各自的包内 `LICENSE`/`license.txt`；
+LibVLCSharp 为 LGPL-2.1-or-later（见 §4），其条款以 §4 的义务说明为准。
 
 | 组件 | 版本 | 许可证 |
 | --- | --- | --- |
 | Microsoft.WindowsAppSDK | 2.5.1 | MIT |
 | CommunityToolkit.Mvvm | 8.4.2 | MIT |
+| LibVLCSharp | 3.10.2 | LGPL-2.1-or-later（§4） |
 | Microsoft.Windows.SDK.NET.Ref / CsWinRT 等 Windows SDK 投影 | 随 TFM | MIT |
 | .NET 运行时 | 由用户机器提供（框架依赖发布） | MIT |
 
 `Microsoft.Windows.SDK.BuildTools` 只用于构建，不随应用分发。
 
-## 5. 不随包分发的工具
+## 7. 不随包分发的工具
 
 `docs/licenses.md` §1 列出开发期工具（Node.js、FFmpeg CLI、`winapp` 等）。它们不进入
 分发包，因此不在本文件中定义分发义务。
 
-## 6. 本项目的来源可见性
+## 8. 本项目的来源可见性
 
 本项目是 GPL 软件：任何人都可以从上述仓库取得与分发包对应的完整源码。分发包**不含**
 源码压缩包，这是 GPL §3 允许的"通过同一网络位置提供"的形式；若你收到的是物理介质，
 同样可通过仓库取得源码，或按 §2.1 的最后一段提出请求。
 
-## 7. 如何复现本文档的结论
+## 9. 如何复现本文档的结论
 
 ```powershell
 # 1. 打印随包 libmpv 的版本、构建配置、FFmpeg/libass/libplacebo 版本与 SHA-256
@@ -152,16 +189,24 @@ pwsh tools/verify-libmpv.ps1
 
 # 2. 确认分发包内的 native 二进制与本文档记录一致
 pwsh tools/package/hash-release.ps1 -Verify
+
+# 3. 核对 §3 记录的 libvlc 哈希（随 NuGet 包分发，包版本锁定于 Directory.Packages.props）
+Get-FileHash dist\DlnRenderer\libvlc\win-x64\libvlc.dll -Algorithm SHA256
+Get-FileHash dist\DlnRenderer\libvlc\win-x64\libvlccore.dll -Algorithm SHA256
 ```
 
-核对日期：2026-10-22。许可证依据均为当日从上游仓库 `raw.githubusercontent.com` /
-`code.videolan.org` / `gitlab.freedesktop.org` / `aomedia.googlesource.com` 直接取得的
-`LICENSE`/`COPYING` 文件。
+核对日期：2026-10-22（libmpv 相关章节）；2026-10-27（libVLC / LibVLCSharp 章节）。许可证依据
+均为当日从上游仓库 `raw.githubusercontent.com` / `code.videolan.org` / `gitlab.freedesktop.org` /
+`aomedia.googlesource.com` 直接取得的 `LICENSE`/`COPYING` 文件，libVLC 章节另核对了
+nuget.org 包页与包内 nuspec。
 
-## 8. 已知缺口
+## 10. 已知缺口
 
-1. §3 中带 `*` 的条目（VapourSynth、Lua、bzip2）本轮未取到上游许可证文件，结论来自项目
+1. §5 中带 `*` 的条目（VapourSynth、Lua、bzip2）本轮未取到上游许可证文件，结论来自项目
    自身声明，需在首次公开发布前补齐文件级核对。
-2. 本文档描述的是**当前锁定的那个** libmpv 构建。更换 libmpv 版本或构建配方时，§2、§3
+2. 本文档描述的是**当前锁定的那个** libmpv 构建。更换 libmpv 版本或构建配方时，§2、§5
    必须重新核对——`scripts/fetch-libmpv.ps1` 的哈希校验正是为此存在。
-3. 本文档不是法律意见。分发前如需确认义务边界，请咨询专业人士。
+3. §3 的 libvlc 记录的是 VideoLAN.LibVLC.Windows 3.0.24 这个包。升级该包（或打开
+   x86/arm64 裁剪开关）时，§3 的体积与哈希必须重新核对；包内插件树的个别模块可能适用
+   GPL，升级时应对 `plugins\` 做一次许可证抽查。
+4. 本文档不是法律意见。分发前如需确认义务边界，请咨询专业人士。

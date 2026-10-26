@@ -31,6 +31,12 @@ public sealed record RendererSettings
     public bool HardwareDecoding { get; init; } = true;
 
     /// <summary>
+    /// Which playback engine the service creates at start. Switching needs a service restart, because
+    /// the engine owns the media player instance the whole session runs on.
+    /// </summary>
+    public PlaybackEngine PlaybackEngine { get; init; } = PlaybackEngine.Mpv;
+
+    /// <summary>
     /// Where a cast is shown. <see cref="DisplayMode.Fullscreen"/> keeps the standalone overlay;
     /// <see cref="DisplayMode.Embedded"/> draws into the area the application window reserves.
     /// </summary>
@@ -75,6 +81,14 @@ public sealed record RendererSettings
                 error = "设备名称不能包含控制字符。";
                 return false;
             }
+        }
+
+        // A settings file edited by hand (or by an older build) can carry a value outside the enum;
+        // rejecting it beats a service that silently starts on the default engine.
+        if (!Enum.IsDefined(settings.PlaybackEngine))
+        {
+            error = "播放内核设置无效。";
+            return false;
         }
 
         return true;

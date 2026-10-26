@@ -1,4 +1,4 @@
-namespace DlnRenderer.Player.Mpv;
+namespace DlnRenderer.Player;
 
 /// <summary>
 /// Rate-limits progress notifications. mpv reports <c>time-pos</c> far more often than a UI can

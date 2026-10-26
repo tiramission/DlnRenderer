@@ -1,3 +1,4 @@
+using DlnRenderer.Core.Models;
 using DlnRenderer.Dlna;
 using DlnRenderer.Player.Mpv;
 using DlnRenderer.Service.Hosting;
@@ -56,6 +57,7 @@ internal sealed class SessionContext : IAsyncDisposable
 
         var session = new RendererSession(
             player,
+            PlaybackEngineInfo.Id(PlaybackEngine.Mpv),
             presenter,
             new DlnaOptions(),
             message =>

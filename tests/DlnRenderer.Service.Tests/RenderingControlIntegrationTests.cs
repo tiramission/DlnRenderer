@@ -317,7 +317,7 @@ public class RenderingControlIntegrationTests
                 Eventing = new GenaOptions { AllowLoopbackCallbacks = true },
             };
 
-            var session = new RendererSession(player, presenter, options, _ => { });
+            var session = new RendererSession(player, PlaybackEngineInfo.Id(PlaybackEngine.Mpv), presenter, options, _ => { });
             var host = new DlnaDeviceHost(options, session, _ => { });
 
             session.RenderingEventRaised += (volume, muted) => host.Eventing.UpdateRenderingControl(volume, muted);

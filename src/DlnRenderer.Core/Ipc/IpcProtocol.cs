@@ -152,6 +152,13 @@ public sealed record RendererSnapshot
     public string? LastError { get; init; }
 
     /// <summary>
+    /// Playback engine the service is running, as a stable id ("mpv" / "vlc"), or null when the
+    /// service predates the field. The UI shows it as a badge; a null is rendered as "no badge"
+    /// rather than assuming mpv.
+    /// </summary>
+    public string? Engine { get; init; }
+
+    /// <summary>
     /// Build of the service that produced this snapshot, or null when the service predates the field.
     /// </summary>
     /// <remarks>

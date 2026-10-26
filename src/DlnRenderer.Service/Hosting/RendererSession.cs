@@ -1,19 +1,20 @@
+using DlnRenderer.Core.Interfaces;
 using DlnRenderer.Core.Ipc;
 using DlnRenderer.Core.Models;
 using DlnRenderer.Dlna;
 using DlnRenderer.Dlna.AvTransport;
 using DlnRenderer.Dlna.Metadata;
-using DlnRenderer.Player.Mpv;
 
 namespace DlnRenderer.Service.Hosting;
 
 /// <summary>
-/// Bridges the DLNA protocol layer, the IPC layer and the real libmpv player. This is the only
-/// place that knows all three, and it is the single writer of renderer state.
+/// Bridges the DLNA protocol layer, the IPC layer and the active playback engine (libmpv or libvlc).
+/// This is the only place that knows all three, and it is the single writer of renderer state.
 /// </summary>
 public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsyncDisposable
 {
-    private readonly MpvPlayer _player;
+    private readonly IMediaPlayer _player;
+    private readonly string _engineId;
     private readonly VideoPresenter? _presenter;
     private readonly DlnaOptions _options;
     private readonly Action<string> _log;
@@ -49,9 +50,10 @@ public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsy
     /// <summary>Where video may be presented; replaced by the UI over IPC.</summary>
     private VideoTarget _videoTarget = VideoTarget.Default;
 
-    public RendererSession(MpvPlayer player, VideoPresenter? presenter, DlnaOptions options, Action<string> log)
+    public RendererSession(IMediaPlayer player, string engineId, VideoPresenter? presenter, DlnaOptions options, Action<string> log)
     {
         _player = player;
+        _engineId = engineId;
         _presenter = presenter;
         _options = options;
         _log = log;
@@ -172,6 +174,7 @@ public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsy
             DiscoveryActive = DiscoveryActive,
             ControlUrl = ControlUrl,
             LastError = error,
+            Engine = _engineId,
             ServiceBuild = BuildVersion,
         };
     }
@@ -337,7 +340,7 @@ public sealed class RendererSession : ITransportRenderer, IRendererControl, IAsy
                     await _player.SeekAsync(position, cancellationToken).ConfigureAwait(false);
                     return;
                 }
-                catch (MpvCommandException ex)
+                catch (PlayerCommandException ex)
                 {
                     // Stop can land between the status read above and this command, which leaves the
                     // player idle and unwilling to seek. Fall through to the deferred path rather

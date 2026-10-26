@@ -8,8 +8,32 @@
     <!-- The Win32 video host uses plain P/Invoke, so no WinUI dependency is required here. -->
   </PropertyGroup>
 
+  <!--
+    VideoLAN.LibVLC.Windows ships x86, x64 and arm64 plugin trees and enables every architecture the
+    platform maps to - AnyCPU would copy all three (~450 MB) into every output folder. The service
+    publishes win-x64 only, so the other two are pinned off: the package still restores once, the
+    output just stops carrying binaries nothing can load.
+  -->
+  <PropertyGroup>
+    <VlcWindowsX64Enabled>true</VlcWindowsX64Enabled>
+    <VlcWindowsX86Enabled>false</VlcWindowsX86Enabled>
+    <VlcWindowsArm64Enabled>false</VlcWindowsArm64Enabled>
+  </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\DlnRenderer.Core\DlnRenderer.Core.csproj" />
+  </ItemGroup>
+
+  <!--
+    The second playback engine. LibVLCSharp is the official VideoLAN .NET binding (LGPL-2.1-or-later,
+    maintained by the libvlc team); VideoLAN.LibVLC.Windows ships native libvlc.dll/libvlccore.dll
+    plus the plugin tree into <output>\libvlc\win-x64, where LibVLCSharp's Core.Initialize() finds
+    them. The project is GPL-2.0-or-later (docs/architecture.md §17.1), so linking an LGPL library
+    and shipping its binaries is the license-compliant form; docs/licenses.md records both packages.
+  -->
+  <ItemGroup>
+    <PackageReference Include="LibVLCSharp" />
+    <PackageReference Include="VideoLAN.LibVLC.Windows" />
   </ItemGroup>
 
   <!--

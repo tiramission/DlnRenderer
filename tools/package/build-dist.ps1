@@ -78,12 +78,15 @@ if (Test-Path -LiteralPath $assetsSource) {
 Write-Step "staging license and third-party notices"
 & (Join-Path $PSScriptRoot 'stage-legal-files.ps1') -Destination $OutputDirectory
 
-# 5. Verify what we claim to ship: a folder missing an exe, the native DLL or the icons is not a release.
+# 5. Verify what we claim to ship: a folder missing an exe, a native DLL or the icons is not a release.
 Write-Step "verifying output"
 $required = @(
     'DlnRenderer.exe',
     'DlnRenderer.Service.exe',
     'libmpv-2.dll',
+    'libvlc\win-x64\libvlc.dll',
+    'libvlc\win-x64\libvlccore.dll',
+    'libvlc\win-x64\plugins',
     'Assets\AppIcon.ico',
     'Assets\Square44x44Logo.scale-200.png',
     'LICENSE',

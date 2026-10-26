@@ -109,6 +109,14 @@ JSON 字段——而 `System.Text.Json` 的默认行为就是这样，不报错�
 
 服务在连接建立时主动推一条 `event`（初始快照），此后每次状态变化都推。UI 因此不需要轮询。
 
+### 快照里的 `engine` 字段
+
+`RendererSnapshot.Engine`（字符串，`"mpv"` / `"vlc"`，服务端 `PlaybackEngineInfo.Id`）告诉 UI
+当前服务跑的是哪个播放内核。UI 用它渲染主页控制坞与悬浮控制条上的内核徽标。
+
+该字段是**加法演进**，协议版本保持 `1.1`：旧服务不发该字段（UI 隐藏徽标而不是猜一个内核），
+旧 UI 收到该字段会忽略。这与 `ServiceBuild` 的处理一致——null 是"信息不存在"，不是"默认 mpv"。
+
 ## 5. `VideoTarget`：画面可以画在哪儿
 
 ```json

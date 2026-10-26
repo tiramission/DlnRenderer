@@ -251,7 +251,7 @@ public class VolumeStateConsistencyTests
                 }
             }
 
-            var session = new RendererSession(player, presenter, options, Write);
+            var session = new RendererSession(player, PlaybackEngineInfo.Id(PlaybackEngine.Mpv), presenter, options, Write);
             var host = new DlnaDeviceHost(options, session, Write);
 
             session.RenderingEventRaised += (volume, muted) => host.Eventing.UpdateRenderingControl(volume, muted);
