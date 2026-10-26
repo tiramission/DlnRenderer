@@ -1094,3 +1094,30 @@ DLL 哈希），`choco install ffmpeg` 供应窗口测试生成素材所需的�
   对旧服务的兼容解析。
 - 播放器真机集成测试仍以 mpv 为准（CI 有 libmpv 供应）；libvlc 侧的真机投屏验收属
   `docs/testing.md` 的手工清单（需真实控制端）。
+
+### 18.6 0.4.0 修复记录：libVLC 画面伪影与光标异常
+
+真机反馈的两个 libVLC 播放问题，定位与修复（`tools/control-point/renderer-check.ps1` +
+Win32 探针实测）：
+
+**画面绿色阴影**：libVLC 3 的 Direct3D11 视频输出以 flip 模型向其自建子窗口栈呈现，
+是嵌入式渲染伪影的已知来源（宿主窗口移动时的残影、未清屏的 letterbox 区域读取未初始化
+显存呈绿色、D3D11VA 表面绿色损坏）。修复：引擎锁定 `--vout=direct3d9`（VLC 自身多年
+的嵌入式呈现路径，普通 blit 呈现、正确清屏），并配对 `--avcodec-hw=dxva2`（默认 "any"
+会让 D3D11VA 解码器胜出，其表面无法喂给 D3D9 呈现，每次投放都要经历一次解码器协商绕道）。
+画质优先的播放属于 mpv 引擎；VLC 引擎定位是兼容性回退，正确性优先。
+
+**播放时光标变成 loading**：探针证实播放期视频区域的光标为共享 IDC_WAIT，且 VLC 3.0
+全源码不存在 IDC_WAIT（`events.c` 只用 arrow/空光标）、窗口无悬挂（`IsHungAppWindow`
+= False、消息延迟 0ms）——沙漏由某一线程直接 `SetCursor` 绕过窗口消息设置，任何针对
+VLC 窗口的 WM_SETCURSOR 拦截（`VlcCursorGuard`）都无法覆盖。修复分三层：
+
+1. `EnableMouseInput/EnableKeyInput = false`：渲染器的一切交互都经自己的 UI，VLC 不再
+   拿到鼠标键盘，其光标自动隐藏（空光标）不再生效；
+2. `VlcCursorGuard`：对 VLC 自建窗口子类化，`WM_SETCURSOR` 一律返回标准箭头；
+3. `VideoPresenter` 光标强制（引擎无关，兜底层）：窗口类光标 = 箭头、`WM_SETCURSOR`
+   直接以箭头应答，并且视频可见期间以 60ms 定时器把视频矩形内出现的任何非箭头光标纠正
+   回箭头。实测从投放第 0 秒起 40/40 次采样全部为 ARROW。
+
+**验证**：完整 SOAP 投屏链路（SetAVTransportURI → Play → Pause → Seek 30s 精确命中 →
+Stop）在 D3D9 路径下全部通过——同一检查在此前的 D3D11 路径上 Seek 会丢失。

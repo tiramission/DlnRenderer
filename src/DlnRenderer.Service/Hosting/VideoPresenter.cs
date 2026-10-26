@@ -49,9 +49,11 @@ public sealed class VideoPresenter : IAsyncDisposable, IMonitorEventsSink
     private const uint WmMouseActivate = 0x0021;
     private const uint WmKeyDown = 0x0100;
     private const uint WmSysKeyDown = 0x0104;
+    private const uint WmSetCursor = 0x0020;
 
     private const int HtClient = 1;
     private const int VkEscape = 0x1B;
+    private const int IdcArrow = 32512;
     private const nint HwndTop = 0;
     private const nint HwndTopmost = -1;
 
@@ -76,6 +78,9 @@ public sealed class VideoPresenter : IAsyncDisposable, IMonitorEventsSink
     private string _presentationState = "hidden";
     private bool _displayChangePending;
     private MonitorEventsListener? _monitorListener;
+
+    /// <summary>Shared arrow cursor, loaded once; read from the window thread only.</summary>
+    private nint _arrowCursor;
 
     /// <summary>Where video may be drawn. Replaced wholesale by <see cref="SetTarget"/>.</summary>
     private VideoTarget _target = VideoTarget.Default;
@@ -300,6 +305,10 @@ public sealed class VideoPresenter : IAsyncDisposable, IMonitorEventsSink
                 // redraw styles only cover the brief period before the first frame arrives.
                 Style = 0x0001 /* CS_VREDRAW */ | 0x0002 /* CS_HREDRAW */,
                 WindowProcedure = Marshal.GetFunctionPointerForDelegate(_windowProc),
+                // The video area always uses the arrow: playback engines manage their own cursors
+                // (VLC's auto-hide shows a blank or a wait cursor over the picture), and a video
+                // surface is not a place where the OS busy pointer means anything.
+                Cursor = LoadCursor(default, IdcArrow),
                 Instance = instance,
                 ClassName = className,
             };
@@ -354,6 +363,8 @@ public sealed class VideoPresenter : IAsyncDisposable, IMonitorEventsSink
                 throw new InvalidOperationException(
                     $"Video child window creation failed (Win32 error {Marshal.GetLastWin32Error()}).");
             }
+
+            _arrowCursor = LoadCursor(default, IdcArrow);
 
             // Unplugging, docking or changing resolution while video is up must not leave the overlay
             // at stale coordinates. The listener simply posts a message to this thread.
@@ -448,6 +459,7 @@ public sealed class VideoPresenter : IAsyncDisposable, IMonitorEventsSink
         // after that, so an observer that sees IsVisible also sees the applied style.
         TopmostApplied = TopmostWindow.Apply(_window, IsActiveWindow(_window));
         _visible = true;
+        StartCursorEnforcement();
 
         if (!placed)
         {
@@ -456,6 +468,57 @@ public sealed class VideoPresenter : IAsyncDisposable, IMonitorEventsSink
         else
         {
             PlacementError = 0;
+        }
+    }
+
+    /// <summary>
+    /// Starts the arrow-cursor enforcement timer. Runs on the window thread.
+    /// </summary>
+    private void StartCursorEnforcement()
+    {
+        if (_window != 0)
+        {
+            _ = SetTimer(_window, CursorTimer, CursorTimerIntervalMs, 0);
+        }
+    }
+
+    /// <summary>Stops the arrow-cursor enforcement timer. Runs on the window thread.</summary>
+    private void StopCursorEnforcement()
+    {
+        if (_window != 0)
+        {
+            _ = KillTimer(_window, CursorTimer);
+        }
+    }
+
+    /// <summary>
+    /// One enforcement tick: when the cursor is over the picture and something else (a playback
+    /// engine's own cursor management, most commonly) has set a non-arrow cursor, put the arrow
+    /// back. Everything outside the video rectangle is left alone.
+    /// </summary>
+    private void EnforceCursor()
+    {
+        if (!_visible || _window == 0 || !GetCursorPos(out var point))
+        {
+            return;
+        }
+
+        if (!GetWindowRect(_window, out var rect))
+        {
+            return;
+        }
+
+        if (point.X < rect.Left || point.X >= rect.Right || point.Y < rect.Top || point.Y >= rect.Bottom)
+        {
+            return;
+        }
+
+        var info = new CursorInfo { Size = Marshal.SizeOf<CursorInfo>() };
+        if (GetCursorInfo(out info)
+            && (info.Flags & 1) != 0 /* CURSOR_SHOWING */
+            && info.Handle != _arrowCursor)
+        {
+            _ = SetCursor(_arrowCursor);
         }
     }
 
@@ -580,6 +643,7 @@ public sealed class VideoPresenter : IAsyncDisposable, IMonitorEventsSink
         ApplyCornerRegion(Math.Max(1, target.Width), Math.Max(1, target.Height), target.CornerRadius);
 
         _visible = true;
+        StartCursorEnforcement();
     }
 
     /// <summary>
@@ -692,6 +756,8 @@ public sealed class VideoPresenter : IAsyncDisposable, IMonitorEventsSink
         _visible = false;
         _monitor = 0;
         Volatile.Write(ref _presentationState, "hidden");
+
+        StopCursorEnforcement();
 
         // Drop topmost before hiding so the window does not stay in the topmost list while unused.
         TopmostWindow.Leave(_window);
@@ -849,6 +915,10 @@ public sealed class VideoPresenter : IAsyncDisposable, IMonitorEventsSink
 
                 return 0;
 
+            case WmTimer when wParam == CursorTimer:
+                EnforceCursor();
+                return 0;
+
             case WmDpiChanged:
                 // Per-monitor DPI changed (window dragged across displays or scaling changed).
                 // Fullscreen always covers physical pixels, so only the child needs resizing.
@@ -859,6 +929,12 @@ public sealed class VideoPresenter : IAsyncDisposable, IMonitorEventsSink
                 // Treat the whole window as client area so no invisible resize border consumes the
                 // picture edge.
                 return HtClient;
+
+            case WmSetCursor:
+                // The picture always uses the arrow; engines that manage their own cursor (VLC's
+                // auto-hide) are overridden here for anything shown over our window.
+                _ = SetCursor(_arrowCursor);
+                return (nint)1;
 
             case WmMouseActivate:
                 return 1; // MA_ACTIVATE: clicking the picture must not route input elsewhere.
@@ -913,6 +989,14 @@ public sealed class VideoPresenter : IAsyncDisposable, IMonitorEventsSink
     private const int GwlStyle = -16;
     private const uint WmTimer = 0x0113;
     private const nint DisplayChangeTimer = 1;
+
+    /// <summary>
+    /// Re-asserts the arrow cursor over the picture. Playback engines can leave a wait or blank
+    /// cursor set from their own threads (observed with libvlc); 60 ms is far below perception for
+    /// a correction, and the check is one rectangle test plus one handle compare.
+    /// </summary>
+    private const nint CursorTimer = 2;
+    private const uint CursorTimerIntervalMs = 60;
 
     private static int ClassSequence;
 
@@ -1048,6 +1132,36 @@ public sealed class VideoPresenter : IAsyncDisposable, IMonitorEventsSink
 
     [DllImport("user32.dll")]
     private static extern int GetMessage(out Message message, nint hwnd, uint min, uint max);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern nint LoadCursor(nint instance, int cursorId);
+
+    [DllImport("user32.dll")]
+    private static extern nint SetCursor(nint cursor);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetCursorPos(out Point point);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetCursorInfo(out CursorInfo info);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Point
+    {
+        public int X;
+        public int Y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct CursorInfo
+    {
+        public int Size;
+        public int Flags;
+        public nint Handle;
+        public Point Position;
+    }
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]

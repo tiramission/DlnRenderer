@@ -1,4 +1,6 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using DlnRenderer.Core.Interfaces;
 using DlnRenderer.Core.Models;
 using DlnRenderer.Core.State;
@@ -84,7 +86,14 @@ public sealed class VlcPlayer : IMediaPlayer
             _player = new MediaPlayer(_libVlc)
             {
                 Hwnd = _options.VideoWindowHandle,
-                EnableHardwareDecoding = _options.HardwareDecoding,
+
+                // VLC's vout installs its own mouse handling over the embedded picture: an
+                // aggressive cursor auto-hide (a blank cursor after ~1 s idle) and, while it
+                // manages the pointer, janky show/hide transitions that read as a busy cursor
+                // inside the application window. The renderer owns every interaction through the
+                // UI, so VLC gets neither mouse nor keyboard.
+                EnableMouseInput = false,
+                EnableKeyInput = false,
             };
 
             AttachEventHandlers(_player);
@@ -121,12 +130,6 @@ public sealed class VlcPlayer : IMediaPlayer
         // defaults to path semantics and would try to open an http:// URL as a file on disk - which
         // is how every real cast failed while local-file smoke tests passed.
         var nativeMedia = new Media(libVlc, media.MediaUri);
-        if (!_options.HardwareDecoding)
-        {
-            // A per-media option only affects this medium; hardware decoding stays enabled for the
-            // player as a whole, matching the "software decoding" switch on the settings page.
-            nativeMedia.AddOption(":avcodec-hw=none");
-        }
 
         lock (_gate)
         {
@@ -419,10 +422,30 @@ public sealed class VlcPlayer : IMediaPlayer
     {
         // --no-video-title-show: the renderer draws its own title; libvlc's filename overlay would
         // flash over the picture on every cast.
-        // --avcodec-hw is deliberately not set here: the player-level default already picks a
-        // hardware decoder, and software decoding is pinned per media in LoadAsync.
         // --no-osd keeps libvlc from painting its own feedback (position popups) into the picture.
         var options = new List<string> { "--no-video-title-show", "--no-osd" };
+
+        if (_options.VideoWindowHandle != 0)
+        {
+            // --vout=direct3d9: VLC 3's D3D11 output presents with the flip model into its own
+            // child-window stack, which is the known source of embedded-rendering artifacts
+            // (stale rectangles when the host window moves, unpainted letterbox areas reading as
+            // green garbage, green corruption from D3D11VA surfaces). The D3D9 output presents
+            // with a plain blit, clears every region it owns and is the embedding path VLC itself
+            // shipped for years. Quality-critical playback belongs to the mpv engine; this engine
+            // is the compatibility fallback, and correctness wins over peak quality here.
+            options.Add("--vout=direct3d9");
+
+            // dxva2 pairs with the D3D9 output: with the default "any", the D3D11VA decoder wins
+            // the probe and its surfaces cannot feed a D3D9 swapchain, so every cast pays a
+            // decoder-negotiation detour first.
+            options.Add(_options.HardwareDecoding ? "--avcodec-hw=dxva2" : "--avcodec-hw=none");
+        }
+        else if (!_options.HardwareDecoding)
+        {
+            options.Add("--avcodec-hw=none");
+        }
+
         return new LibVLC(options.ToArray());
     }
 
@@ -492,6 +515,10 @@ public sealed class VlcPlayer : IMediaPlayer
             _reachedEnd = false;
             reapplyPause = _desiredPause;
         }
+
+        // The vout windows exist from this event on (re-created for each new vout session), so the
+        // cursor guard re-runs here; it subclasses only windows it has not seen before.
+        VlcCursorGuard.Install(_options.VideoWindowHandle);
 
         if (reapplyPause)
         {
